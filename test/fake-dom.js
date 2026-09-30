@@ -92,6 +92,18 @@ export class FakeEl {
 
 export function createFakeDocument() {
   const byId = new Map();
+  const chips = [
+    ["connectionTest", "Test AI connection"],
+    ["", "My pool water is cloudy"],
+    ["", "I need to test drinking water"],
+    ["", "My chlorine seems too high"],
+    ["", "I need a general water test"],
+  ].map(([id, text]) => {
+    const chip = new FakeEl("button");
+    chip.id = id;
+    chip.textContent = text;
+    return chip;
+  });
   return {
     createElement: (tag) => new FakeEl(tag),
     createTextNode: (text) => new FakeText(text),
@@ -99,7 +111,8 @@ export function createFakeDocument() {
       if (!byId.has(id)) byId.set(id, new FakeEl(`#${id}`));
       return byId.get(id);
     },
-    querySelectorAll: () => [],
+    querySelectorAll: (selector) => selector === ".tw-chip" ? chips : [],
+    chips,
   };
 }
 

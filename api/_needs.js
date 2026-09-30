@@ -147,22 +147,48 @@ export function analyzeNeeds(messages) {
 const POOL_TYPE = /\bsalt\s*water\b|\bsaltwater\b|\bsalt pool\b|\bsaltwater pool\b|\bchlorine[- ]treated\b|\bchlorinated pool\b|\b(?:use|using|treated with|treat(?:ed) with)\s+(?:chlorine|bromine)\b/i;
 const AQUARIUM_TYPE = /\bfreshwater\b|\bfresh water\b|\bsaltwater\b|\bsalt water\b|\bmarine\b|\breef\b|\btropical\b/i;
 const DRINKING_SOURCE = /\btap water\b|\bmains water\b|\bbottled water\b|\bprivate (?:water )?supply\b|\bwell water\b|\bborehole\b|\bspring water\b/i;
+const POOL_TREATMENT_QUESTION = /chlorine[- ]treated.*saltwater.*bromine/i;
+const POOL_TREATMENT_ANSWER = /\b(?:salt\s*water|saltwater)\b|\bbromine\b|\bchlorine(?:[- ]treated)?\b/i;
 const TEST_SCOPE =
   /\b(?:complete|full|routine|general|basic|broad|all[- ]round)\s+(?:water\s+)?(?:test|check|screen|screening|panel)\b|\b(?:haven't|have not|never|not yet)\s+(?:recently\s+)?tested\b|\b(?:already|recently)\s+tested\b|\btest results?\b|\bresults?\s+(?:are|show|showing|read|came)\b|\b(?:chlorine|ph|alkalinity)\s+(?:is|was|at|reads?)\s+\d/i;
 
-function determineRecommendationReadiness(messages, needs) {
+function treatmentAnswerFromConversation(conversation) {
+  const answer = conversation.at(-1);
+  const question = conversation.at(-2);
+  if (
+    answer?.role !== "user" ||
+    question?.role !== "assistant" ||
+    !POOL_TREATMENT_QUESTION.test(question.content) ||
+    !POOL_TREATMENT_ANSWER.test(answer.content)
+  ) {
+    return null;
+  }
+  if (/\b(?:salt\s*water|saltwater)\b/i.test(answer.content)) return "saltwater";
+  if (/\bbromine\b/i.test(answer.content)) return "bromine";
+  if (/\bchlorine(?:[- ]treated)?\b/i.test(answer.content)) return "chlorine";
+  return null;
+}
+
+export function isPoolTreatmentQuestion(text) {
+  return POOL_TREATMENT_QUESTION.test(text);
+}
+
+function determineRecommendationReadiness(messages, needs, conversation) {
   const text = messages.filter((message) => typeof message === "string").join("\n");
+  const answeredPoolTreatment = treatmentAnswerFromConversation(conversation);
   const hasGoal = needs.problem || needs.productIntent || needs.explicit.length > 0;
-  const poolTypeKnown = needs.context !== "pool" && needs.context !== "spa" || POOL_TYPE.test(text);
+  const poolTypeKnown = needs.context !== "pool" && needs.context !== "spa" ||
+    POOL_TYPE.test(text) || Boolean(answeredPoolTreatment);
   const aquariumTypeKnown = needs.context !== "aquarium" || AQUARIUM_TYPE.test(text);
   const drinkingSourceKnown = needs.context !== "drinking" || DRINKING_SOURCE.test(text);
-  const poolTreatment = /\bsalt\s*water\b|\bsaltwater\b|\bsalt pool\b/i.test(text)
+  const poolTreatment = answeredPoolTreatment ||
+    (/\bsalt\s*water\b|\bsaltwater\b|\bsalt pool\b/i.test(text)
     ? "saltwater"
     : /\bbromine\b/i.test(text)
       ? "bromine"
       : /\bchlorine[- ]treated\b|\bchlorinated pool\b|\b(?:use|using|treated with|treat(?:ed) with)\s+chlorine\b/i.test(text)
         ? "chlorine"
-        : null;
+        : null);
   const aquariumType = /\bsaltwater\b|\bsalt water\b|\bmarine\b|\breef\b/i.test(text)
     ? "saltwater"
     : /\bfreshwater\b|\bfresh water\b|\btropical\b/i.test(text)
@@ -217,8 +243,8 @@ function determineRecommendationReadiness(messages, needs) {
   };
 }
 
-export function assessRecommendationReadiness(messages, needs = analyzeNeeds(messages)) {
-  return determineRecommendationReadiness(messages, needs);
+export function assessRecommendationReadiness(messages, needs = analyzeNeeds(messages), conversation = []) {
+  return determineRecommendationReadiness(messages, needs, conversation);
 }
 
 export const parameterLabels = (ids) => ids.map((id) => PARAM_BY_ID[id]?.label).filter(Boolean);

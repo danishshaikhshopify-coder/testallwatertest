@@ -441,9 +441,17 @@ async function ask(text){
 }
 document.getElementById('closeAI').onclick=()=>{panel.classList.remove('open');panel.setAttribute('aria-hidden','true')}
 document.getElementById('form').onsubmit=e=>{e.preventDefault();const t=input.value.trim();if(t){input.value='';ask(t)}}
+const welcomeMessage=messages.children[0];
+function startSuggestedIntent(text){
+ if(busy)return;
+ history=[];
+ messages.textContent="";
+ if(welcomeMessage)messages.appendChild(welcomeMessage);
+ ask(text);
+}
 document.querySelectorAll('.tw-chip').forEach(b=>{
   if(b.id==="connectionTest") return;
-  b.onclick=()=>ask(b.textContent.trim());
+  b.onclick=()=>startSuggestedIntent(b.textContent.trim());
 });
 document.getElementById("connectionTest").onclick=()=>ask("Connection test: Please reply with a short confirmation that you are the TestAllWater water-testing assistant.");
 status.textContent="AI ready · NaraRouter";

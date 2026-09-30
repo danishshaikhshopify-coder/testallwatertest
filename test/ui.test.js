@@ -233,6 +233,12 @@ function bootPage(fetchImpl) {
       submit(text);
       await settle();
     },
+    async clickChip(text) {
+      const chip = doc.chips.find((button) => button.textContent === text);
+      assert.ok(chip, `suggested prompt exists: ${text}`);
+      chip.onclick();
+      await settle();
+    },
     isIdle: () => !el("send").disabled && !el("input").disabled && !el("typing").classList.contains("show"),
     rows: () =>
       el("messages").children.map((row) => ({
@@ -530,6 +536,26 @@ test("page: a product card row is a separate element, so it cannot break the bub
   assert.match(css, /@media\(max-width:760px\)\{[\s\S]*\.tw-row\.tw-products\{padding-left:0\}/);
   // the original bubble rule is untouched
   assert.match(css, /\.tw-bubble\{max-width:min\(720px,78%\);font-size:14px;line-height:1\.68;padding:14px 16px;border-radius:17px;background:#fff;border:1px solid #e3e9ed;box-shadow:0 5px 18px rgba\(25,48,65,\.045\);white-space:pre-wrap\}/);
+});
+
+test("page: a suggested drinking-water intent starts fresh instead of inheriting pool context", async () => {
+  const requests = [];
+  const page = bootPage((url, init) => {
+    requests.push(JSON.parse(init.body));
+    return apiFetch(url, init);
+  });
+
+  await page.send("My pool water is cloudy.");
+  assert.match(textOf(page.rows().at(-1).bubble), /chlorine-treated, saltwater, or treated with bromine/);
+  await page.clickChip("I need to test drinking water");
+
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1].messages.map((message) => [message.role, message.content]), [
+    ["user", "I need to test drinking water"],
+  ]);
+  assert.deepEqual(page.rows().map((row) => row.role), ["user", "assistant"]);
+  assert.equal(textOf(page.rows().at(0).bubble), "I need to test drinking water");
+  assert.match(textOf(page.rows().at(1).bubble), /tap, a private well, or another source/);
 });
 
 test("page: assistant replies render Markdown; the user's own text stays plain", async () => {

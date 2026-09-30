@@ -186,6 +186,85 @@ test("recommendation readiness asks a pool treatment question, then scope, and s
   assert.ok(Array.isArray(third.payload.products) && third.payload.products.length > 0);
 });
 
+for (const [answer, treatment] of [
+  ["chlorine", "chlorine"],
+  ["saltwater", "saltwater"],
+  ["bromine", "bromine"],
+]) {
+  test(`pool treatment clarification accepts "${answer}" and advances to testing scope`, async () => {
+    mockUpstream(ok("This should not be called before readiness."));
+    const initial = "My pool water is cloudy.";
+    const first = await call({ body: { messages: [{ role: "user", content: initial }] } });
+    const next = await call({
+      body: {
+        messages: [
+          { role: "user", content: initial },
+          { role: "assistant", content: first.payload.reply },
+          { role: "user", content: answer },
+        ],
+      },
+    });
+
+    assert.equal(next.payload.readiness.ready, false);
+    assert.equal(next.payload.readiness.poolTreatment, treatment);
+    assert.deepEqual(next.payload.readiness.missing, ["testing_scope"]);
+    assert.match(next.payload.reply, /recently tested the chlorine and pH levels/);
+    assert.equal(next.payload.products, undefined);
+    assert.equal(upstreamCalls.length, 0, "neither NaraRouter nor Shopify runs before readiness");
+  });
+}
+
+test('pool treatment clarification responds helpfully to "yes" instead of repeating the question', async () => {
+  mockUpstream(ok("This should not be called before readiness."));
+  const initial = "My pool water is cloudy.";
+  const first = await call({ body: { messages: [{ role: "user", content: initial }] } });
+  const second = await call({
+    body: {
+      messages: [
+        { role: "user", content: initial },
+        { role: "assistant", content: first.payload.reply },
+        { role: "user", content: "yes" },
+      ],
+    },
+  });
+
+  assert.equal(second.payload.readiness.ready, false);
+  assert.equal(second.payload.readiness.poolTreatment, null);
+  assert.match(second.payload.reply, /No problem.*chlorine-treated, saltwater, or bromine/i);
+  assert.notEqual(second.payload.reply, first.payload.reply);
+  assert.equal(second.payload.products, undefined);
+  assert.equal(upstreamCalls.length, 0);
+});
+
+test("pool treatment clarification never repeats the same outstanding question consecutively", async () => {
+  const initial = "My pool water is cloudy.";
+  const first = await call({ body: { messages: [{ role: "user", content: initial }] } });
+  const second = await call({
+    body: {
+      messages: [
+        { role: "user", content: initial },
+        { role: "assistant", content: first.payload.reply },
+        { role: "user", content: "yes" },
+      ],
+    },
+  });
+  const third = await call({
+    body: {
+      messages: [
+        { role: "user", content: initial },
+        { role: "assistant", content: first.payload.reply },
+        { role: "user", content: "yes" },
+        { role: "assistant", content: second.payload.reply },
+        { role: "user", content: "I don't know" },
+      ],
+    },
+  });
+
+  assert.notEqual(third.payload.reply, second.payload.reply);
+  assert.equal(third.payload.readiness.ready, false);
+  assert.equal(third.payload.products, undefined);
+});
+
 test("an explicit saltwater pool and named test parameters is ready immediately and returns products", async () => {
   delete process.env.SHOPIFY_CATALOG;
   resetCatalogState();

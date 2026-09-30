@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { analyzeNeeds, assessRecommendationReadiness, parameterLabels } from "./_needs.js";
+import { analyzeNeeds, assessRecommendationReadiness, isPoolTreatmentQuestion, parameterLabels } from "./_needs.js";
 import { findProducts } from "./_catalog.js";
 import { guardReply } from "./_guard.js";
 
@@ -519,15 +519,27 @@ export default async function handler(req, res) {
 
   const userMessages = conversation.filter((m) => m.role === "user").map((m) => m.content);
   const needs = analyzeNeeds(userMessages);
-  const readiness = assessRecommendationReadiness(userMessages, needs);
+  const readiness = assessRecommendationReadiness(userMessages, needs, conversation);
 
   if (needs.wantsProducts && !readiness.ready) {
     const previousAssistant = conversation.at(-2);
     const repeatedQuestion = repeated && previousAssistant?.role === "assistant" &&
       normalizeForCompare(previousAssistant.content) === normalizeForCompare(readiness.question);
+    const invalidPoolTreatment = readiness.missing.includes("pool_treatment") &&
+      previousAssistant?.role === "assistant" &&
+      isPoolTreatmentQuestion(previousAssistant.content) &&
+      !readiness.poolTreatment;
+    const clarificationOptions = [
+      "No problem — which one is it: chlorine-treated, saltwater, or bromine?",
+      "Please choose one: chlorine-treated, saltwater, or bromine.",
+    ];
     const reply = repeatedQuestion
       ? `I still need this detail before I can recommend the right tests: ${readiness.question.replace(/[?]\s*$/, "")}.`
-      : readiness.question;
+      : invalidPoolTreatment
+        ? clarificationOptions.find(
+            (question) => normalizeForCompare(question) !== normalizeForCompare(previousAssistant.content)
+          ) ?? clarificationOptions[0]
+        : readiness.question;
     return res.status(200).json({
       reply,
       model: "readiness-gate",

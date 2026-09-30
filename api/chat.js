@@ -4,8 +4,8 @@ import {
   assessRecommendationReadiness,
   constrainQuestionToState,
   deriveConversationState,
+  guidedResponse,
   getNextMissingField,
-  isPoolTreatmentQuestion,
   parameterLabels,
 } from "./_needs.js";
 import { findProducts } from "./_catalog.js";
@@ -47,12 +47,15 @@ OF TEST METHOD is appropriate. You are a water-testing/product-discovery
 assistant, not a generic chatbot.
 
 CONVERSATION:
-- Let the customer describe the situation naturally.
+- Let the customer describe the situation naturally. Use structured state and the conversation as the authoritative record.
 - Identify water type: pool, spa/hot tub, drinking water, aquarium, pond,
   well water, industrial/commercial water, or other.
 - Identify whether they want routine testing, troubleshooting, a specific
   parameter, or general screening.
-- Ask only the most useful missing question, normally one at a time.
+- Ask only for the next useful missing detail. Never ask for a known fact, restart context, repeat a generic introduction, or repeat a question the customer has already answered.
+- Treat short answers such as "pH", "yes", "no", "bromine" and "not sure" in the context of the immediately preceding question.
+- The backend may provide structured quick-reply options. Keep the response aligned with those options; do not invent a conflicting question.
+- Avoid generic "I can narrow this down" filler. Acknowledge the customer's latest detail and continue naturally.
 - Keep questions simple for non-technical customers.
 - When enough information is known, recommend the water type, parameters to test,
   suitable test format, and briefly explain why.
@@ -530,31 +533,17 @@ export default async function handler(req, res) {
   const needs = analyzeNeeds(userMessages, state);
   const readiness = assessRecommendationReadiness(userMessages, needs, conversation, state);
 
-  if (needs.wantsProducts && !readiness.ready) {
-    const previousAssistant = conversation.at(-2);
-    const repeatedQuestion = repeated && previousAssistant?.role === "assistant" &&
-      normalizeForCompare(previousAssistant.content) === normalizeForCompare(readiness.question);
-    const invalidPoolTreatment = readiness.missing.includes("pool_treatment") &&
-      previousAssistant?.role === "assistant" &&
-      isPoolTreatmentQuestion(previousAssistant.content) &&
-      !readiness.poolTreatment;
-    const clarificationOptions = [
-      "No problem — which one is it: chlorine-treated, saltwater, or bromine?",
-      "Please choose one: chlorine-treated, saltwater, or bromine.",
-    ];
-    const reply = repeatedQuestion
-      ? `I still need this detail before I can recommend the right tests: ${readiness.question.replace(/[?]\s*$/, "")}.`
-      : invalidPoolTreatment
-        ? clarificationOptions.find(
-            (question) => normalizeForCompare(question) !== normalizeForCompare(previousAssistant.content)
-          ) ?? clarificationOptions[0]
-        : readiness.question;
-    state._lastAssistantReply = reply;
+  if (!readiness.ready && (needs.wantsProducts || state.waterType || state.pendingWaterTypeSwitch)) {
+    const guided = guidedResponse(state, readiness, userMessages.at(-1) ?? "");
+    state.lastAskedField = guided.field;
+    state._lastAssistantReply = guided.reply;
     return res.status(200).json({
-      reply,
+      reply: guided.reply,
+      options: guided.options,
       model: "readiness-gate",
       readiness,
       state,
+      ready: false,
     });
   }
 
@@ -566,7 +555,7 @@ export default async function handler(req, res) {
   // The notes go into the single system message (some models mishandle several).
   const system = [
     SYSTEM_PROMPT,
-    `KNOWN FACTS:\n- Water type: ${state.waterType || "not known"}\n- Treatment: ${state.treatment || "not applicable or not known"}\n- Testing scope: ${state.testingScope || "not known"}\n- Parameters: ${needs.parameters.length ? parameterLabels(needs.parameters).join(", ") : "not known"}\n- Goal: ${state.goal || "not known"}\nDO NOT ASK FOR THESE AGAIN. The deterministic next missing field is "${getNextMissingField(state)}". If it is not "ready", ask about ONLY that field and do not ask about any known field. If it is "ready", answer using the known facts without restarting clarification.`,
+    `KNOWN FACTS:\n- Water type: ${state.waterType || "not known"}\n- Water subtype: ${state.waterSubtype || "not known"}\n- Water source: ${state.waterSource || "not known"}\n- Treatment: ${state.treatment || "not applicable or not known"}\n- Issues reported: ${state.issues?.length ? state.issues.join(", ") : "none"}\n- Testing scope: ${state.testingScope || "not known"}\n- Parameters: ${needs.parameters.length ? parameterLabels(needs.parameters).join(", ") : "not known"}\n- Goal: ${state.goal || "not known"}\nDO NOT ASK FOR THESE AGAIN. This structured state is authoritative; do not reset context for short answers. The deterministic next missing field is "${getNextMissingField(state)}". If it is not "ready", ask about ONLY that field and do not ask about any known field. Use any structured quick-reply options returned by the backend. If it is "ready", answer using the known facts without restarting clarification.`,
     readiness.ready ? "RECOMMENDATION STATUS: READY. The required context has been gathered. Do not ask for information already provided; give a recommendation based on the gathered details." : "",
     repeated ? REPEATED_MESSAGE_NOTE : "",
     productContext(needs, catalog),
@@ -601,7 +590,7 @@ export default async function handler(req, res) {
     meta.outcome = "ok";
     meta.replyChars = reply.length;
     logRequest(meta);
-    const body = { reply, model: result.model, readiness, state };
+    const body = { reply, options: [], model: result.model, readiness, state, ready: readiness.ready };
     if (catalog.products.length) body.products = catalog.products;
     return res.status(200).json(body);
   } catch (error) {

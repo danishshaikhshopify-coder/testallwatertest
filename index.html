@@ -105,6 +105,11 @@ body{
 .tw-quick{padding:11px 22px 6px;display:flex;gap:8px;flex-wrap:wrap;background:#fff;border-top:1px solid var(--line)}
 .tw-chip{border:1px solid #dce4e9;background:#fff;color:#34444f;border-radius:999px;padding:9px 13px;font-family:"DM Sans";font-size:12px;font-weight:600;cursor:pointer;transition:.2s}
 .tw-chip:hover{border-color:#9cc7e4;color:var(--brand);background:#f5fbff;transform:translateY(-1px)}
+.tw-row.assistant.has-options{flex-wrap:wrap}
+.tw-replies{display:flex;flex-wrap:wrap;gap:7px;margin:8px 0 0 41px;max-width:min(720px,78%)}
+.tw-reply{border:1px solid #d7e5ee;background:linear-gradient(180deg,#fff,#f8fbfd);color:#28516b;border-radius:999px;padding:7px 11px;font-family:"DM Sans";font-size:12px;font-weight:650;cursor:pointer;transition:border-color .18s,background .18s,transform .18s}
+.tw-reply:hover{border-color:#9cc7e4;background:#f1f9fe;transform:translateY(-1px)}
+.tw-reply.other{color:#6b7b85;background:#fff}
 .tw-typing{display:none;padding:0 28px 10px;background:#fff;color:#7c8992;font-size:12px}
 .tw-typing.show{display:block}.tw-dots{display:inline-flex;gap:3px;margin-left:5px}.tw-dots i{width:4px;height:4px;background:#87949d;border-radius:50%;animation:dot 1s infinite}.tw-dots i:nth-child(2){animation-delay:.15s}.tw-dots i:nth-child(3){animation-delay:.3s}
 @keyframes dot{0%,70%,100%{opacity:.25;transform:translateY(0)}35%{opacity:1;transform:translateY(-2px)}}
@@ -119,6 +124,7 @@ body{
 @media(max-width:760px){
  .tw-wrap{padding:20px 12px 45px}.tw-launch{padding:30px 24px;display:block}.tw-copy h1{font-size:28px}.tw-open{margin-top:23px;width:100%}
  .tw-body{height:650px}.tw-messages{padding:21px 15px 14px}.tw-bubble{max-width:88%}.tw-quick{padding:10px 14px 6px}.tw-inputbar{padding:10px}
+ .tw-replies{margin-left:41px;max-width:calc(88% - 41px);gap:6px}.tw-reply{padding:7px 10px}
  .tw-row.tw-products{padding-left:0}.tw-pcard{gap:11px;padding:11px}.tw-pimg{flex-basis:76px;width:76px;height:76px}
  .tw-pbtn{flex:1 1 120px;height:42px}
 }
@@ -396,12 +402,23 @@ function addProducts(list,readiness){
  row.appendChild(wrap);messages.appendChild(row);
  requestAnimationFrame(()=>messages.scrollTop=messages.scrollHeight);
 }
-function addMessage(role,text){
+function addMessage(role,text,options=[]){
  const row=document.createElement('div');row.className='tw-row '+role;
+ if(role==='assistant'&&Array.isArray(options)&&options.length)row.classList.add('has-options');
  if(role==='assistant'){const av=document.createElement('div');av.className='tw-avatar';av.textContent='AI';row.appendChild(av)}
  const bubble=document.createElement('div');bubble.className='tw-bubble';
  if(role==='assistant'){bubble.classList.add('md');renderMarkdown(text,document,bubble)}else bubble.textContent=text;
  row.appendChild(bubble);
+ if(role==='assistant'&&Array.isArray(options)&&options.length){
+  const replies=document.createElement('div');replies.className='tw-replies';replies.setAttribute('role','group');replies.setAttribute('aria-label','Suggested answers');
+  options.slice(0,4).forEach(option=>{
+   if(!option||typeof option.label!=="string"||typeof option.value!=="string")return;
+   const button=document.createElement('button');button.type='button';button.className='tw-reply'+(option.value==="__other__"?' other':'');button.textContent=option.label;
+   button.onclick=()=>{if(busy)return;if(option.value==="__other__"){input.focus();return}ask(option.value)};
+   replies.appendChild(button);
+  });
+  if(replies.children.length)row.appendChild(replies);
+ }
  messages.appendChild(row);requestAnimationFrame(()=>messages.scrollTop=messages.scrollHeight);
 }
 function setBusy(v){busy=v;send.disabled=v;input.disabled=v;typing.classList.toggle('show',v)}
@@ -428,7 +445,7 @@ async function ask(text){
   if(!reply) throw new Error("The AI returned an empty response.");
   conversationState=data?.state||data?.readiness?.state||conversationState;
   history.push({role:"assistant",content:reply});
-  addMessage("assistant",reply);
+  addMessage("assistant",reply,Array.isArray(data.options)?data.options:[]);
   addProducts(data.products,data.readiness);
  }catch(e){
   /* The failed exchange is not added to history as an assistant turn, so the next message

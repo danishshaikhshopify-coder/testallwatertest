@@ -239,11 +239,17 @@ function bootPage(fetchImpl) {
       chip.onclick();
       await settle();
     },
+    async clickReply(text) {
+      const button = allElements(el("messages")).find((item) => item.classes?.has("tw-reply") && item.textContent === text);
+      assert.ok(button, `quick reply exists: ${text}`);
+      button.onclick();
+      await settle();
+    },
     isIdle: () => !el("send").disabled && !el("input").disabled && !el("typing").classList.contains("show"),
     rows: () =>
       el("messages").children.map((row) => ({
         role: row.classes.has("user") ? "user" : "assistant",
-        bubble: row.children[row.children.length - 1],
+        bubble: row.children.find((child) => child.classes?.has("tw-bubble")),
       })),
   };
 }
@@ -424,31 +430,52 @@ async function shopPage(reply = "A few tests will tell us what is going on. See 
   return { page: bootPage(apiFetch), store, world };
 }
 
+test("page: Other focuses the text box and free text continues the existing conversation", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("Here are the relevant tests.") });
+  const requests = [];
+  const page = bootPage((url, init) => {
+    requests.push(JSON.parse(init.body));
+    return apiFetch(url, init);
+  });
+
+  await page.send(poolMessage);
+  assert.equal(requests.length, 1);
+  assert.match(textOf(page.rows().at(-1).bubble), /cloudy pool water/);
+  await page.clickReply("Other / Type my answer");
+  assert.equal(page.el("input").focused, true);
+  assert.equal(requests.length, 1, "Other focuses free text without submitting a preset");
+
+  await page.send("I want nitrate checked");
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].state.waterType, "pool");
+  assert.ok(page.isIdle());
+});
+
 test("page: a pool question asks first, gathers scope, then shows real product cards", async () => {
   const { page, store, world } = await shopPage();
   await page.send(poolMessage);
 
   let rows = page.el("messages").children;
-  assert.deepEqual(rows.map((r) => r.className), ["tw-row user", "tw-row assistant"]);
-  assert.match(textOf(rows[1]), /chlorine-treated, saltwater, or treated with bromine/);
+  assert.deepEqual(rows.map((r) => r.className), ["tw-row user", "tw-row assistant has-options"]);
+  assert.match(textOf(rows[1]), /cloudy pool water can have a few causes/);
   assert.equal(rows.filter((row) => row.classes.has("tw-products")).length, 0);
-  assert.equal(store.calls.length, 0, "the catalog must not run before treatment is known");
+  assert.equal(store.calls.length, 0, "the catalog must not run before test scope is known");
   assert.equal(world.llmCalls.length, 0);
+  assert.deepEqual(allElements(rows[1]).filter((element) => element.classes.has("tw-reply")).map(textOf), [
+    "Chlorine & pH", "Full pool water check", "Other / Type my answer",
+  ]);
 
-  await page.send("It's a saltwater pool.");
-  rows = page.el("messages").children;
-  assert.match(textOf(rows.at(-1)), /recently tested the chlorine and pH levels/);
-  assert.equal(rows.filter((row) => row.classes.has("tw-products")).length, 0);
-  assert.equal(store.calls.length, 0, "the catalog must not run before scope is known");
-
-  await page.send("I haven't tested chlorine or pH yet; I want a complete check.");
+  await page.clickReply("Chlorine & pH");
   rows = page.el("messages").children;
   assert.equal(rows.at(-1).className, "tw-row assistant tw-products");
   assert.ok(store.calls.some((entry) => entry.path === "/search/suggest.json"));
   assert.equal(world.llmCalls.length, 1);
 
   // the answer bubble is exactly what it always was: text only, no product markup inside it
-  const bubble = rows.at(-2).children[rows.at(-2).children.length - 1];
+  const bubble = rows.at(-2).children.find((element) => element.classes.has("tw-bubble"));
   assert.equal(textOf(bubble), "A few tests will tell us what is going on. See the options below.");
   assert.equal(allElements(bubble).some((e) => e.tag === "article" || e.classes.has("tw-pcard")), false);
 
@@ -546,7 +573,7 @@ test("page: a suggested drinking-water intent starts fresh instead of inheriting
   });
 
   await page.send("My pool water is cloudy.");
-  assert.match(textOf(page.rows().at(-1).bubble), /chlorine-treated, saltwater, or treated with bromine/);
+  assert.match(textOf(page.rows().at(-1).bubble), /cloudy pool water/);
   await page.clickChip("I need to test drinking water");
 
   assert.equal(requests.length, 2);
@@ -555,7 +582,7 @@ test("page: a suggested drinking-water intent starts fresh instead of inheriting
   ]);
   assert.deepEqual(page.rows().map((row) => row.role), ["user", "assistant"]);
   assert.equal(textOf(page.rows().at(0).bubble), "I need to test drinking water");
-  assert.match(textOf(page.rows().at(1).bubble), /tap, a private well, or another source/);
+  assert.match(textOf(page.rows().at(1).bubble), /source of your drinking water/);
 });
 
 test("page: assistant replies render Markdown; the user's own text stays plain", async () => {
@@ -577,9 +604,9 @@ test("page: assistant replies render Markdown; the user's own text stays plain",
   assert.doesNotMatch(textOf(assistant.bubble), /\*\*/);
 });
 
-test("page: a JSON-shaped model reply reaches the customer as normal formatted text, never as JSON", async () => {
+test("page: model follow-up cannot repeat a known aquarium subtype question", async () => {
   const upstream = scriptUpstream(
-    ok('{"response":"Thanks, I\'ve got that. For **freshwater** fish, check ammonia, nitrite and nitrate."}'),
+    ok('{"response":"Thanks, I\'ve got that. Is this a **freshwater** or **saltwater** aquarium?"}'),
     ok(JSON.stringify({ water_type: "aquarium", parameters: ["ammonia", "nitrite"], test_format: "liquid drop kit" })),
     ok('{"messages":[{"role":"user","content":"x"}]}')
   );
@@ -592,10 +619,10 @@ test("page: a JSON-shaped model reply reaches the customer as normal formatted t
   await page.send("No, that is all.");
 
   const [, first, , second, , third, , fourth] = page.rows();
-  assert.equal(textOf(first.bubble), "Is your aquarium freshwater or saltwater?");
+  assert.equal(textOf(first.bubble), "Is it freshwater or saltwater?");
   assert.equal(
     second.bubble.children.map(toHtml).join(""),
-    "<p>Thanks, I've got that. For <strong>freshwater</strong> fish, check ammonia, nitrite and nitrate.</p>"
+    "<p>I have the water type, treatment, testing scope and parameters you shared noted, so I’ll focus on the tests relevant to those details.</p>"
   );
   assert.equal(
     third.bubble.children.map(toHtml).join(""),

@@ -97,15 +97,15 @@ const unique = (list) => [...new Set(list)];
 
 const POOL_TREATMENT_QUESTION = /chlorine[- ]treated.*saltwater.*bromine/i;
 const TEST_SCOPE_QUESTION = /recently tested.*chlorine.*pH.*complete check/i;
-const TEST_SCOPE_CLARIFICATION = /you'd like to check pH.*also like chlorine tested, or just pH/i;
+const TEST_SCOPE_CLARIFICATION = /you want to check pH.*also like to check chlorine/i;
 const SCOPE_COMPLETE = /\b(?:complete|full|routine|general|basic|broad|all[- ]round)\s+(?:water\s+)?(?:test|check|screen|screening|panel)\b|\b(?:haven't|have not|never|not yet)\s+(?:recently\s+)?tested\b|\b(?:already|recently)\s+tested\b|\btest results?\b|\bresults?\s+(?:are|show|showing|read|came)\b/i;
 const SWITCH_INTENT = /\b(?:switch(?:ing)?|change|changing|instead|actually|rather than|new test)\b/i;
-const SWITCH_CONFIRM = /^\s*(?:yes|yes please|switch|switching|that one|aquarium|pool|spa|hot tub|pond|tap water|drinking water|well water)\s*[.!]?\s*$/i;
 
 const WATER_TYPE_QUESTION = "What kind of water are you testing, such as a pool, hot tub, aquarium, tap water, or well water?";
 const TREATMENT_QUESTION = "Is your pool chlorine-treated, saltwater, or treated with bromine?";
-const SCOPE_QUESTION = "Have you recently tested the chlorine and pH levels, or would you like a complete check?";
-const SCOPE_CLARIFICATION = "Got it — you'd like to check pH. Would you also like chlorine tested, or just pH?";
+const SCOPE_CLARIFICATION = "Got it — you want to check pH. Would you also like to check chlorine?";
+const ISSUE_WORDS = ["cloudy", "green", "murky", "foamy", "smelly", "discoloured", "discolored"];
+const OTHER_OPTION = { label: "Other / Type my answer", value: "__other__" };
 
 function detectTreatment(text) {
   if (/\b(?:salt\s*water|saltwater)(?:\s+pool)?\b/i.test(text)) return "saltwater";
@@ -121,7 +121,11 @@ function detectAquariumType(text) {
 }
 
 function detectWaterSource(text) {
-  return /\b(?:tap|mains|bottled|well|spring) water\b|\bprivate (?:water )?supply\b|\bborehole\b/i.exec(text)?.[0]?.toLowerCase() ?? null;
+  const match = /\b(?:tap|mains|bottled|well|spring)(?: water)?\b|\bprivate (?:water )?supply\b|\bborehole\b/i.exec(text)?.[0];
+  if (!match) return null;
+  return /\btap\b/i.test(match) || /\bmains\b/i.test(match) ? "tap"
+    : /\bwell\b|private|\bborehole\b/i.test(match) ? "well"
+      : /\bspring\b/i.test(match) ? "spring" : "bottled";
 }
 
 function contextLabel(context) {
@@ -142,7 +146,21 @@ function resetWaterSpecificState(state, waterType) {
 }
 
 function answerToPendingSwitch(text, candidate) {
-  return SWITCH_CONFIRM.test(text) && (!detectContext(text) || detectContext(text) === candidate);
+  return /^\s*(?:yes|yeah|yep|yes please|yes[, ]+(?:aquarium|pool|spa|hot tub|pond|tap water|drinking water|well water))\s*[.!]?\s*$/i.test(text) &&
+    (!detectContext(text) || detectContext(text) === candidate);
+}
+
+function fieldAskedBy(reply) {
+  if (/switch from .* to|switching to .* instead/i.test(reply)) return "waterTypeSwitch";
+  if (/freshwater or saltwater/i.test(reply)) return "aquariumType";
+  if (/source of your drinking water|tap, .*private well/i.test(reply)) return "waterSource";
+  if (/general screen, or checking a specific concern/i.test(reply)) return "testingScope";
+  if (/pool chlorine-treated, saltwater|treated with bromine/i.test(reply)) return "treatment";
+  if (/what are you trying to check|what would you like to check|would you also like to check chlorine|recently tested.*complete check/i.test(reply)) {
+    return "testingScope";
+  }
+  if (/what are you hoping to check|what are you looking to test/i.test(reply)) return "goal";
+  return null;
 }
 
 export function deriveConversationState(conversation, previousState = null) {
@@ -150,13 +168,23 @@ export function deriveConversationState(conversation, previousState = null) {
   const state = {
     waterType: validTypes.has(previousState?.waterType) ? previousState.waterType : null,
     treatment: ["chlorine", "saltwater", "bromine"].includes(previousState?.treatment) ? previousState.treatment : null,
-    testingScope: ["complete", "specific", "specific-pending"].includes(previousState?.testingScope) ? previousState.testingScope : null,
     parameters: Array.isArray(previousState?.parameters)
       ? unique(previousState.parameters.filter((id) => Object.hasOwn(PARAM_BY_ID, id)))
       : [],
+    issues: Array.isArray(previousState?.issues)
+      ? unique(previousState.issues.filter((issue) => ISSUE_WORDS.includes(issue)))
+      : [],
     goal: typeof previousState?.goal === "string" ? previousState.goal : null,
-    waterSubtype: ["freshwater", "saltwater"].includes(previousState?.waterSubtype) ? previousState.waterSubtype : null,
+    waterSubtype: ["freshwater", "saltwater", "unknown"].includes(previousState?.waterSubtype ?? previousState?.aquariumType)
+      ? (previousState.waterSubtype ?? previousState.aquariumType)
+      : null,
     waterSource: typeof previousState?.waterSource === "string" ? previousState.waterSource : null,
+    testingScope: ["complete", "specific", "specific-pending", "general", "unknown"].includes(previousState?.testingScope)
+      ? previousState.testingScope
+      : null,
+    lastAskedField: ["waterType", "goal", "treatment", "testingScope", "waterSource", "aquariumType", "waterTypeSwitch"].includes(previousState?.lastAskedField)
+      ? previousState.lastAskedField
+      : null,
     pendingWaterTypeSwitch:
       validTypes.has(previousState?.pendingWaterTypeSwitch?.from) &&
       validTypes.has(previousState?.pendingWaterTypeSwitch?.to)
@@ -184,6 +212,7 @@ export function deriveConversationState(conversation, previousState = null) {
     }
     if (turn.role !== "user") continue;
     const text = turn.content.trim();
+    const requestedField = state.lastAskedField ?? fieldAskedBy(priorAssistant);
     users.push(text);
 
     const candidate = detectContext(text);
@@ -208,83 +237,129 @@ export function deriveConversationState(conversation, previousState = null) {
     }
 
     if (state.pendingWaterTypeSwitch) continue;
+    if (state.waterType === "aquarium" && !state.goal) state.goal = "general testing";
 
     if ((state.waterType === "pool" || state.waterType === "spa") && !state.treatment) {
       const treatment = detectTreatment(text);
-      if (treatment && (POOL_TREATMENT_QUESTION.test(priorAssistant) || users.length === 1 || /\b(?:pool|spa)\b/i.test(text))) {
+      if (treatment && (requestedField === "treatment" || POOL_TREATMENT_QUESTION.test(priorAssistant) ||
+        users.length === 1 || /\b(?:pool|spa)\b/i.test(text) || /^\s*(?:bromine|chlorine|salt\s*water|saltwater)\s*[.!]?\s*$/i.test(text))) {
         state.treatment = treatment;
       }
     }
 
     if (state.waterType === "aquarium" && !state.waterSubtype) {
       const subtype = detectAquariumType(text);
-      if (subtype && (/freshwater or saltwater/i.test(priorAssistant) || /\b(?:aquarium|fish tank|freshwater|fresh water|saltwater|salt water)\b/i.test(text))) {
+      if (subtype && (requestedField === "waterType" || requestedField === "aquariumType" ||
+        /freshwater or saltwater/i.test(priorAssistant) || /\b(?:aquarium|fish tank|freshwater|fresh water|saltwater|salt water)\b/i.test(text))) {
         state.waterSubtype = subtype;
+      } else if (requestedField === "aquariumType" && /^\s*(?:not sure|unsure|i don't know)\s*[.!]?\s*$/i.test(text)) {
+        state.waterSubtype = "unknown";
       }
     }
 
     if (state.waterType === "drinking" || state.waterType === "well") {
       state.waterSource ??= detectWaterSource(text);
+      if (!state.waterSource && requestedField === "waterSource" && /^\s*tap\s*[.!]?\s*$/i.test(text)) state.waterSource = "tap";
+      if (!state.waterSource && requestedField === "waterSource" &&
+        /^\s*(?:yes|no|not sure|unsure|i don't know)\s*[.!]?\s*$/i.test(text)) state.waterSource = "unknown";
     }
 
     const normalized = text.toLowerCase().replace(/\bsalt\s+water\b/g, "saltwater").replace(/\bph\b/gi, "pH");
-    const isTreatmentAnswer = POOL_TREATMENT_QUESTION.test(priorAssistant) && /^\s*(?:bromine|chlorine|salt\s*water|saltwater)\s*[.!]?\s*$/i.test(text);
+    const isTreatmentAnswer = (POOL_TREATMENT_QUESTION.test(priorAssistant) ||
+      (["pool", "spa"].includes(state.waterType) && state.treatment && /^\s*(?:bromine|chlorine|salt\s*water|saltwater)\s*[.!]?\s*$/i.test(text))) &&
+      /^\s*(?:bromine|chlorine|salt\s*water|saltwater)\s*[.!]?\s*$/i.test(text);
     state.parameters = unique([
       ...state.parameters,
-      ...PARAMS.filter((parameter) => parameter.user.test(normalized) && !(isTreatmentAnswer && parameter.id === "bromine")).map((parameter) => parameter.id),
+      ...PARAMS.filter((parameter) => parameter.user.test(normalized) &&
+        !(isTreatmentAnswer && ["bromine", "chlorine"].includes(parameter.id))).map((parameter) => parameter.id),
     ]);
 
-    if (!state.goal && (PROBLEM.test(text) || INTENT.test(text) || TESTWORD.test(text) || state.parameters.length)) {
-      state.goal = PROBLEM.test(text) ? "troubleshooting" : state.parameters.length ? "parameter-specific testing" : "general testing";
+    const issues = ISSUE_WORDS.filter((word) => new RegExp(`\\b${word}\\b`, "i").test(text))
+      .map((word) => word === "discoloured" ? "discolored" : word);
+    if (issues.length) state.issues = unique([...state.issues, ...issues]);
+    if (PROBLEM.test(text)) state.goal = "troubleshooting";
+    else if (!state.goal && (INTENT.test(text) || TESTWORD.test(text) || state.parameters.length)) {
+      state.goal = state.parameters.length ? "parameter-specific testing" : "general testing";
     }
 
-    if ((state.waterType === "pool" || state.waterType === "spa") && TEST_SCOPE_QUESTION.test(priorAssistant)) {
-      if (SCOPE_COMPLETE.test(text) || /\bcomplete check\b|\bfull check\b/i.test(text)) {
-        state.testingScope = "complete";
+    if (requestedField === "testingScope" || TEST_SCOPE_QUESTION.test(priorAssistant) ||
+      TEST_SCOPE_CLARIFICATION.test(priorAssistant)) {
+      if (SCOPE_COMPLETE.test(text) || /\b(?:complete|full)\b.{0,24}\b(?:test|check)\b|\bpH\s*\+\s*chlorine\b|\bchlorine\s*\+\s*pH\b/i.test(text)) {
+        if (/\bpH\s*\+\s*chlorine\b|\bchlorine\s*\+\s*pH\b/i.test(text)) {
+          state.parameters = unique([...state.parameters, "ph", "chlorine"]);
+          state.testingScope = "specific";
+        } else {
+          state.testingScope = "complete";
+        }
       } else if (/\b(?:just|only)\s+pH\b|\bpH\s+only\b|\bchlorine\s+(?:and|&)\s+pH\b|\bpH\s+(?:and|&)\s+chlorine\b/i.test(text)) {
         state.testingScope = "specific";
       } else if (/^\s*p\s*\.?\s*h\s*[.!]?\s*$/i.test(text) || /^\s*pH\s*[.!]?\s*$/i.test(text)) {
         state.testingScope = "specific-pending";
-      }
-    } else if ((state.waterType === "pool" || state.waterType === "spa") && TEST_SCOPE_CLARIFICATION.test(priorAssistant)) {
-      if (SCOPE_COMPLETE.test(text) || /\bcomplete check\b|\bfull check\b/i.test(text)) {
-        state.testingScope = "complete";
-      } else if (/\b(?:p\s*\.?\s*h|chlorine)\b/i.test(text)) {
+      } else if (/\bspecific concern\b|\btest (?:for|my)\b/i.test(text) ||
+        (state.parameters.length > 0 && !isTreatmentAnswer && !state.parameters.every((id) => id === "ph"))) {
         state.testingScope = "specific";
+      } else if (/^\s*(?:yes|yeah|yep|sure)\s*[.!]?\s*$/i.test(text)) {
+        if (state.testingScope === "specific-pending" && state.parameters.includes("ph")) {
+          state.parameters = unique([...state.parameters, "chlorine"]);
+          state.testingScope = "specific";
+        } else {
+          state.testingScope = "complete";
+        }
+      } else if (/^\s*no\s*[.!]?\s*$/i.test(text) && state.testingScope === "specific-pending") {
+        state.testingScope = "specific";
+      } else if (/^\s*(?:not sure|unsure|maybe|i don't know)\s*[.!]?\s*$/i.test(text)) {
+        if (requestedField === "waterSource") state.waterSource = "unknown";
       }
-    } else if ((state.waterType === "pool" || state.waterType === "spa") && (SCOPE_COMPLETE.test(text) || /\bcomplete check\b|\bfull check\b/i.test(text))) {
-      state.testingScope = "complete";
-    } else if ((state.waterType === "pool" || state.waterType === "spa") && state.parameters.length >= 2) {
+    }
+    if (["pool", "spa"].includes(state.waterType) && state.parameters.length >= 2) state.testingScope = "specific";
+    if (["pool", "spa"].includes(state.waterType) && state.parameters.length === 1 &&
+      state.parameters[0] === "ph" && !state.testingScope) state.testingScope = "specific-pending";
+    if (["drinking", "well"].includes(state.waterType) && state.waterSource && state.parameters.length) {
       state.testingScope = "specific";
     }
+    if (!requestedField && /\b(?:complete|full)\b.{0,24}\b(?:test|check)\b/i.test(text)) {
+      state.testingScope = "complete";
+    }
+    if (!state.goal && state.waterType === "aquarium" && state.waterSubtype) state.goal = "general testing";
+    if (!state.goal && state.waterType === "drinking" && state.waterSource) state.goal = "general testing";
+    state.lastAskedField = null;
   }
+  state.aquariumType = state.waterSubtype;
   return state;
 }
 
 export function getNextMissingField(state) {
   if (!state.waterType) return "waterType";
+  if (state.pendingWaterTypeSwitch) return "waterTypeSwitch";
   if (!state.goal) return "goal";
-  if (state.waterType === "pool" || state.waterType === "spa") {
-    if (!state.treatment) return "treatment";
-    if (!state.testingScope || state.testingScope === "specific-pending") return "testingScope";
-  }
-  if (state.waterType === "aquarium" && !state.waterSubtype) return "waterType";
-  if ((state.waterType === "drinking" || state.waterType === "well") && !state.waterSource) return "waterType";
+  if (state.waterType === "aquarium" && !state.waterSubtype) return "aquariumType";
+  if ((state.waterType === "drinking" || state.waterType === "well") && !state.waterSource) return "waterSource";
+  if (["pool", "spa", "drinking", "well"].includes(state.waterType) &&
+    (!state.testingScope || state.testingScope === "specific-pending")) return "testingScope";
   return "ready";
 }
 
 export function questionForMissingField(field, state) {
   if (field === "waterType") {
-    if (state.waterType === "aquarium") return "Is your aquarium freshwater or saltwater?";
-    if (state.waterType === "drinking" || state.waterType === "well") return "Is your drinking water from the tap, a private well, or another source?";
     return WATER_TYPE_QUESTION;
   }
+  if (field === "aquariumType") return "Is it freshwater or saltwater?";
+  if (field === "waterSource") return "What is the source of your drinking water?";
   if (field === "goal") return `What are you hoping to check in your ${state.waterType === "pool" ? "pool" : "water"}?`;
   if (field === "treatment") return TREATMENT_QUESTION;
   if (field === "testingScope") {
-    return state.parameters.includes("ph") && state.testingScope === "specific-pending"
-      ? SCOPE_CLARIFICATION
-      : SCOPE_QUESTION;
+    if (state.waterType === "drinking" || state.waterType === "well") {
+      return "Are you looking for a general screen, or checking a specific concern?";
+    }
+    if (state.parameters.includes("ph") && state.testingScope === "specific-pending") return SCOPE_CLARIFICATION;
+    if (state.parameters.includes("ph")) return "Got it — you want to check pH. Would you also like to check chlorine?";
+    if (state.issues.includes("green")) {
+      return "Got it. Green pool water can point us toward a different set of tests. What would you like to check?";
+    }
+    if (state.issues.includes("cloudy")) {
+      return "Got it — cloudy pool water can have a few causes. What are you trying to check?";
+    }
+    return "What would you like to check?";
   }
   return "";
 }
@@ -295,8 +370,96 @@ function clarifyWaterTypeSwitch(state) {
   if (!from || !to) return "";
   const toLabel = contextLabel(to).replace(/ water$/, "");
   const fromLabel = contextLabel(from).replace(/ water$/, "");
+  if (to === "aquarium" && from === "pool") {
+    return "It sounds like you're testing aquarium water instead. Should I switch from pool water to aquarium water?";
+  }
   const article = /^[aeiou]/i.test(toLabel) ? "an" : "a";
-  return `Are you switching to ${article} ${toLabel} test, or are we still discussing your ${fromLabel}?`;
+  return `It sounds like you're testing ${toLabel} instead. Should I switch from ${fromLabel} water to ${toLabel}?`;
+}
+
+export function guidedOptionsForField(field, state) {
+  let choices = [];
+  if (field === "waterType") choices = [
+    { label: "Pool", value: "pool" },
+    { label: "Aquarium", value: "aquarium" },
+    { label: "Drinking water", value: "drinking water" },
+  ];
+  else if (field === "aquariumType") choices = [
+    { label: "Freshwater", value: "freshwater" },
+    { label: "Saltwater", value: "saltwater" },
+    { label: "Not sure", value: "not sure" },
+  ];
+  else if (field === "waterSource") choices = [
+    { label: "Tap water", value: "tap" },
+    { label: "Private well", value: "well water" },
+    { label: "Not sure", value: "not sure" },
+  ];
+  else if (field === "testingScope" && (state.waterType === "pool" || state.waterType === "spa")) {
+    if (state.parameters.includes("ph") && state.testingScope === "specific-pending") {
+      choices = [
+        { label: "pH only", value: "pH only" },
+        { label: "pH + Chlorine", value: "pH + Chlorine" },
+      ];
+    } else {
+      choices = [
+        { label: "Chlorine & pH", value: "Chlorine & pH" },
+        { label: "Full pool water check", value: "complete pool water test" },
+      ];
+    }
+  } else if (field === "testingScope") {
+    choices = [
+      { label: "General screen", value: "general water screen" },
+      { label: "Specific concern", value: "specific water concern" },
+      { label: "Not sure", value: "not sure" },
+    ];
+  } else if (field === "treatment") {
+    choices = [
+      { label: "Chlorine", value: "chlorine" },
+      { label: "Saltwater", value: "saltwater" },
+      { label: "Bromine", value: "bromine" },
+    ];
+  } else if (field === "waterTypeSwitch") {
+    choices = [
+      { label: "Yes, aquarium", value: "yes aquarium" },
+      { label: "No, keep pool", value: "no keep pool" },
+    ];
+  } else if (field === "goal") {
+    choices = ["pool", "spa"].includes(state.waterType)
+      ? [
+          { label: "Chlorine & pH", value: "chlorine and pH" },
+          { label: "Full pool water check", value: "complete pool water test" },
+        ]
+      : [
+          { label: "General screen", value: "general water screen" },
+          { label: "Specific parameter", value: "specific water concern" },
+        ];
+  }
+  return [...choices.slice(0, 3), OTHER_OPTION];
+}
+
+export function guidedResponse(state, readiness, latestUserMessage = "") {
+  const field = state.pendingWaterTypeSwitch ? "waterTypeSwitch" : readiness.nextMissingField;
+  let reply = state.pendingWaterTypeSwitch
+    ? clarifyWaterTypeSwitch(state)
+    : questionForMissingField(field, state);
+  const uncertain = /^\s*(?:no|not sure|unsure|maybe|i don't know)\s*[.!]?\s*$/i.test(latestUserMessage);
+  if (field === "waterTypeSwitch" && state.lastAskedField === "waterTypeSwitch" &&
+    new RegExp(`^\\s*${state.pendingWaterTypeSwitch?.to}\\s*[.!]?\\s*$`, "i").test(latestUserMessage)) {
+    reply = "I’ll keep your pool as-is for now. Choose “Yes, aquarium” to switch, or “No, keep pool” to continue.";
+  } else if (field === "testingScope" && state.treatment && /^\s*(?:bromine|chlorine|salt\s*water|saltwater)\s*[.!]?\s*$/i.test(latestUserMessage)) {
+    reply = `Thanks — ${state.treatment} noted. What would you like to test?`;
+  } else if (uncertain && field === "testingScope" && ["pool", "spa"].includes(state.waterType)) {
+    reply = "No problem. We can start with chlorine and pH, or check the full pool balance. Which would you prefer?";
+  } else if (uncertain && field === "testingScope") {
+    reply = "No problem. We can start with a general screen, or focus on a particular concern. Which would help?";
+  } else if (uncertain && field === "treatment") {
+    reply = "No problem — we can still narrow down the useful tests. What would you like to check?";
+  }
+  return {
+    reply,
+    options: guidedOptionsForField(field, state),
+    field,
+  };
 }
 
 export function analyzeNeeds(messages, state = deriveConversationState(messages.map((content) => ({ role: "user", content })))) {
@@ -312,7 +475,8 @@ export function analyzeNeeds(messages, state = deriveConversationState(messages.
   const productIntent = INTENT.test(text) || TESTWORD.test(text) || Boolean(state.goal);
   const problem = PROBLEM.test(text) || state.goal === "troubleshooting";
   const wantsProducts = parameters.length > 0 && (productIntent || problem || explicit.length > 0);
-  const descriptor = (DESCRIPTORS.exec(text)?.[1] ?? "").toLowerCase().replace("cloudiness", "cloudy").replace("foaming", "foamy");
+  const descriptor = state.issues.at(-1) ??
+    (DESCRIPTORS.exec(text)?.[1] ?? "").toLowerCase().replace("cloudiness", "cloudy").replace("foaming", "foamy");
 
   return {
     context,
@@ -333,18 +497,19 @@ function determineRecommendationReadiness(messages, needs, conversation, state) 
   const nextMissingField = getNextMissingField(state);
   const missing = [];
   if (!state.waterType) missing.push("water_type");
+  if (state.pendingWaterTypeSwitch) missing.push("water_type_confirmation");
   if (!state.goal) missing.push("goal");
-  if ((state.waterType === "pool" || state.waterType === "spa") && !state.treatment) missing.push("pool_treatment");
   if (state.waterType === "aquarium" && !state.waterSubtype) missing.push("aquarium_type");
   if ((state.waterType === "drinking" || state.waterType === "well") && !state.waterSource) missing.push("water_source");
-  if ((state.waterType === "pool" || state.waterType === "spa") && (!state.testingScope || state.testingScope === "specific-pending")) missing.push("testing_scope");
+  if (["pool", "spa", "drinking", "well"].includes(state.waterType) &&
+    (!state.testingScope || state.testingScope === "specific-pending")) missing.push("testing_scope");
 
   const question = state.pendingWaterTypeSwitch
     ? clarifyWaterTypeSwitch(state)
     : questionForMissingField(nextMissingField, state);
   return {
     ready: nextMissingField === "ready" && !state.pendingWaterTypeSwitch,
-    nextMissingField: state.pendingWaterTypeSwitch ? "waterType" : nextMissingField,
+    nextMissingField: state.pendingWaterTypeSwitch ? "waterTypeSwitch" : nextMissingField,
     state,
     context: state.waterType,
     goal: state.goal,

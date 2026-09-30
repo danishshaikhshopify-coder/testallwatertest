@@ -140,7 +140,7 @@ test("returns 400 when there is no user message", async () => {
   assert.equal(upstreamCalls.length, 0);
 });
 
-test("recommendation readiness asks a pool treatment question, then scope, and searches only when ready", async () => {
+test("pool flow remembers cloudy and green issues, gathers parameters, and searches only when ready", async () => {
   delete process.env.SHOPIFY_CATALOG;
   resetCatalogState();
   const store = createFakeStore();
@@ -148,24 +148,27 @@ test("recommendation readiness asks a pool treatment question, then scope, and s
 
   const first = await call({ body: { messages: [{ role: "user", content: "My pool water is cloudy." }] } });
   assert.equal(first.statusCode, 200);
-  assert.match(first.payload.reply, /chlorine-treated, saltwater, or treated with bromine/);
-  assert.deepEqual(first.payload.readiness.missing, ["pool_treatment", "testing_scope"]);
+  assert.match(first.payload.reply, /cloudy pool water can have a few causes.*What are you trying to check/);
+  assert.deepEqual(first.payload.options.map(({ label }) => label), ["Chlorine & pH", "Full pool water check", "Other / Type my answer"]);
   assert.equal(first.payload.readiness.ready, false);
   assert.equal(first.payload.products, undefined);
   assert.equal(store.calls.length, 0, "catalog must not be contacted before readiness");
+  assert.equal(first.payload.state.waterType, "pool");
+  assert.ok(first.payload.state.issues.includes("cloudy"));
 
   const second = await call({
     body: {
       messages: [
         { role: "user", content: "My pool water is cloudy." },
         { role: "assistant", content: first.payload.reply },
-        { role: "user", content: "It's a saltwater pool." },
+        { role: "user", content: "green water" },
       ],
     },
   });
   assert.equal(second.statusCode, 200);
-  assert.match(second.payload.reply, /recently tested the chlorine and pH levels/);
-  assert.deepEqual(second.payload.readiness.missing, ["testing_scope"]);
+  assert.match(second.payload.reply, /Green pool water can point us toward a different set of tests/);
+  assert.ok(second.payload.state.issues.includes("cloudy"));
+  assert.ok(second.payload.state.issues.includes("green"));
   assert.equal(second.payload.products, undefined);
   assert.equal(store.calls.length, 0, "catalog must remain untouched while scope is missing");
 
@@ -174,16 +177,36 @@ test("recommendation readiness asks a pool treatment question, then scope, and s
       messages: [
         { role: "user", content: "My pool water is cloudy." },
         { role: "assistant", content: first.payload.reply },
-        { role: "user", content: "It's a saltwater pool." },
+        { role: "user", content: "green water" },
         { role: "assistant", content: second.payload.reply },
-        { role: "user", content: "I haven't tested chlorine or pH yet; I want a complete check." },
+        { role: "user", content: "ph" },
       ],
     },
   });
   assert.equal(third.statusCode, 200);
-  assert.equal(third.payload.readiness.ready, true);
+  assert.match(third.payload.reply, /check pH.*also like to check chlorine/i);
+  assert.ok(third.payload.state.parameters.includes("ph"));
+  assert.equal(third.payload.readiness.ready, false);
+  assert.equal(third.payload.products, undefined);
+  assert.equal(store.calls.length, 0);
+
+  const fourth = await call({
+    body: {
+      messages: [
+        { role: "user", content: "My pool water is cloudy." },
+        { role: "assistant", content: first.payload.reply },
+        { role: "user", content: "green water" },
+        { role: "assistant", content: second.payload.reply },
+        { role: "user", content: "ph" },
+        { role: "assistant", content: third.payload.reply },
+        { role: "user", content: "pH + Chlorine" },
+      ],
+    },
+  });
+  assert.equal(fourth.payload.readiness.ready, true);
+  assert.deepEqual(fourth.payload.state.parameters, ["ph", "chlorine"]);
   assert.ok(store.calls.some((entry) => entry.path === "/search/suggest.json"));
-  assert.ok(Array.isArray(third.payload.products) && third.payload.products.length > 0);
+  assert.ok(Array.isArray(fourth.payload.products) && fourth.payload.products.length > 0);
 });
 
 for (const [answer, treatment] of [
@@ -208,13 +231,14 @@ for (const [answer, treatment] of [
     assert.equal(next.payload.readiness.ready, false);
     assert.equal(next.payload.readiness.poolTreatment, treatment);
     assert.deepEqual(next.payload.readiness.missing, ["testing_scope"]);
-    assert.match(next.payload.reply, /recently tested the chlorine and pH levels/);
+    assert.match(next.payload.reply, new RegExp(`${treatment} noted|What would you like to check`, "i"));
     assert.equal(next.payload.products, undefined);
+    assert.ok(next.payload.options.length > 0);
     assert.equal(upstreamCalls.length, 0, "neither NaraRouter nor Shopify runs before readiness");
   });
 }
 
-test('pool treatment clarification responds helpfully to "yes" instead of repeating the question', async () => {
+test('pool scope clarification accepts "yes" as a complete check', async () => {
   mockUpstream(ok("This should not be called before readiness."));
   const initial = "My pool water is cloudy.";
   const first = await call({ body: { messages: [{ role: "user", content: initial }] } });
@@ -228,12 +252,9 @@ test('pool treatment clarification responds helpfully to "yes" instead of repeat
     },
   });
 
-  assert.equal(second.payload.readiness.ready, false);
-  assert.equal(second.payload.readiness.poolTreatment, null);
-  assert.match(second.payload.reply, /No problem.*chlorine-treated, saltwater, or bromine/i);
+  assert.equal(second.payload.readiness.ready, true);
+  assert.equal(second.payload.state.testingScope, "complete");
   assert.notEqual(second.payload.reply, first.payload.reply);
-  assert.equal(second.payload.products, undefined);
-  assert.equal(upstreamCalls.length, 0);
 });
 
 test("pool treatment clarification never repeats the same outstanding question consecutively", async () => {
@@ -244,7 +265,7 @@ test("pool treatment clarification never repeats the same outstanding question c
       messages: [
         { role: "user", content: initial },
         { role: "assistant", content: first.payload.reply },
-        { role: "user", content: "yes" },
+        { role: "user", content: "not sure" },
       ],
     },
   });
@@ -253,9 +274,9 @@ test("pool treatment clarification never repeats the same outstanding question c
       messages: [
         { role: "user", content: initial },
         { role: "assistant", content: first.payload.reply },
-        { role: "user", content: "yes" },
+        { role: "user", content: "not sure" },
         { role: "assistant", content: second.payload.reply },
-        { role: "user", content: "I don't know" },
+        { role: "user", content: "green water" },
       ],
     },
   });
@@ -277,18 +298,18 @@ test("regression: pool, bromine, scope question, then pH retains state and never
   const conversation = [];
   let result = await sendTurn(conversation, "My pool water is cloudy");
   let state = result.payload.state;
-  assert.match(result.payload.reply, /chlorine-treated, saltwater, or treated with bromine/);
+  assert.match(result.payload.reply, /cloudy pool water can have a few causes/);
 
   result = await sendTurn(conversation, "bromine", state);
   state = result.payload.state;
   assert.equal(result.payload.readiness.state.treatment, "bromine");
-  assert.match(result.payload.reply, /recently tested the chlorine and pH levels/);
+  assert.match(result.payload.reply, /noted.*What would you like to test/);
 
   result = await sendTurn(conversation, "ph", state);
   assert.equal(result.payload.state.waterType, "pool");
   assert.equal(result.payload.state.treatment, "bromine");
   assert.ok(result.payload.state.parameters.includes("ph"));
-  assert.match(result.payload.reply, /you'd like to check pH.*also like chlorine tested, or just pH/i);
+  assert.match(result.payload.reply, /you want to check pH.*also like to check chlorine/i);
   assert.doesNotMatch(result.payload.reply, /chlorine-treated, saltwater, or treated with bromine/i);
   assert.equal(result.payload.readiness.nextMissingField, "testingScope");
 
@@ -301,6 +322,7 @@ test("regression: pool, bromine, scope question, then pH retains state and never
 
 for (const [treatmentAnswer, treatment] of [["bromine", "bromine"], ["chlorine", "chlorine"]]) {
   test(`pool, ${treatmentAnswer}, then pH keeps treatment and records pH`, async () => {
+    mockSequence(ok("The requested pool tests are covered."));
     const conversation = [];
     let response = await sendTurn(conversation, "My pool water is cloudy");
     response = await sendTurn(conversation, treatmentAnswer, response.payload.state);
@@ -310,7 +332,7 @@ for (const [treatmentAnswer, treatment] of [["bromine", "bromine"], ["chlorine",
     assert.equal(response.payload.state.treatment, treatment);
     assert.ok(response.payload.state.parameters.includes("ph"));
     assert.deepEqual(response.payload.readiness.missing, ["testing_scope"]);
-    assert.match(response.payload.reply, /also like chlorine tested, or just pH/i);
+    assert.match(response.payload.reply, /check pH.*also like to check chlorine/i);
   });
 }
 
@@ -337,7 +359,7 @@ test('pool, bromine, then "aquarium" asks for confirmation without switching', a
   assert.equal(response.payload.state.treatment, "bromine");
   assert.deepEqual(response.payload.state.pendingWaterTypeSwitch, { from: "pool", to: "aquarium" });
   assert.equal(response.payload.readiness.ready, false);
-  assert.match(response.payload.reply, /switching to an aquarium test, or are we still discussing your pool/i);
+  assert.match(response.payload.reply, /testing aquarium water instead.*switch from pool water to aquarium water/i);
 });
 
 test("explicitly switching from pool to aquarium changes water type and clears pool treatment", async () => {
@@ -389,11 +411,131 @@ test("treatment answers normalize equivalent wording", async () => {
     ["chlorine treated", "chlorine"],
     ["bromine pool", "bromine"],
   ]) {
+    mockSequence(ok("Thanks, I've noted the treatment."));
     const conversation = [];
     let response = await sendTurn(conversation, "My pool water is cloudy");
     response = await sendTurn(conversation, answer, response.payload.state);
     assert.equal(response.payload.state.treatment, expected, answer);
   }
+});
+
+test("pool bromine, pH, and complete check reaches recommendations without repeating a field", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("These pool options cover the checks you requested.") });
+  const conversation = [];
+  let response = await sendTurn(conversation, "My pool water is cloudy");
+  response = await sendTurn(conversation, "bromine", response.payload.state);
+  assert.equal(response.payload.state.treatment, "bromine");
+  assert.match(response.payload.reply, /bromine noted/);
+  response = await sendTurn(conversation, "pH", response.payload.state);
+  assert.equal(response.payload.state.waterType, "pool");
+  assert.equal(response.payload.state.treatment, "bromine");
+  assert.ok(response.payload.state.parameters.includes("ph"));
+  assert.match(response.payload.reply, /check pH.*also like to check chlorine/i);
+  assert.equal(response.payload.products, undefined);
+  response = await sendTurn(conversation, "complete check", response.payload.state);
+  assert.equal(response.payload.readiness.ready, true);
+  assert.equal(response.payload.state.treatment, "bromine");
+  assert.ok(store.calls.some((entry) => entry.path === "/search/suggest.json"));
+  assert.ok(response.payload.products?.length);
+  assert.doesNotMatch(response.payload.reply, /Is your pool chlorine-treated, saltwater, or treated with bromine/i);
+});
+
+test("aquarium subtype answer becomes freshwater state and allows recommendations", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("For a freshwater aquarium, these options cover common checks.") });
+  const conversation = [];
+  let response = await sendTurn(conversation, "I have an aquarium");
+  assert.match(response.payload.reply, /freshwater or saltwater/i);
+  assert.deepEqual(response.payload.options.map(({ label }) => label), [
+    "Freshwater", "Saltwater", "Not sure", "Other / Type my answer",
+  ]);
+  response = await sendTurn(conversation, "freshwater", response.payload.state);
+  assert.equal(response.payload.state.waterType, "aquarium");
+  assert.equal(response.payload.state.aquariumType, "freshwater");
+  assert.equal(response.payload.readiness.ready, true);
+  assert.ok(response.payload.products?.length);
+  assert.ok(store.calls.some((entry) => entry.path === "/search/suggest.json"));
+});
+
+test("switch confirmation preserves pool until affirmative aquarium selection", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("Freshwater aquarium options are shown below.") });
+  const conversation = [];
+  let response = await sendTurn(conversation, "My pool water is cloudy");
+  response = await sendTurn(conversation, "bromine", response.payload.state);
+  response = await sendTurn(conversation, "aquarium", response.payload.state);
+  assert.equal(response.payload.state.waterType, "pool");
+  assert.equal(response.payload.state.treatment, "bromine");
+  assert.match(response.payload.reply, /switch from pool water to aquarium water/i);
+  assert.deepEqual(response.payload.options.map(({ label }) => label), [
+    "Yes, aquarium", "No, keep pool", "Other / Type my answer",
+  ]);
+  response = await sendTurn(conversation, "aquarium", response.payload.state);
+  assert.equal(response.payload.state.waterType, "pool", "repeating the candidate name does not confirm a switch");
+  assert.match(response.payload.reply, /keep your pool as-is/i);
+
+  response = await sendTurn(conversation, "yes aquarium", response.payload.state);
+  assert.equal(response.payload.state.waterType, "aquarium");
+  assert.equal(response.payload.state.treatment, null);
+  response = await sendTurn(conversation, "freshwater", response.payload.state);
+  assert.equal(response.payload.state.waterType, "aquarium");
+  assert.equal(response.payload.state.aquariumType, "freshwater");
+  assert.equal(response.payload.readiness.ready, true);
+  assert.doesNotMatch(response.payload.reply, /chlorine-treated, saltwater, or treated with bromine/i);
+  assert.ok(response.payload.products?.length);
+});
+
+test("drinking water source answer advances to screening scope", async () => {
+  const conversation = [];
+  let response = await sendTurn(conversation, "I need to test drinking water");
+  assert.match(response.payload.reply, /source of your drinking water/);
+  response = await sendTurn(conversation, "tap", response.payload.state);
+  assert.equal(response.payload.state.waterType, "drinking");
+  assert.equal(response.payload.state.waterSource, "tap");
+  assert.match(response.payload.reply, /general screen.*specific concern/i);
+  assert.deepEqual(response.payload.options.map(({ label }) => label), [
+    "General screen", "Specific concern", "Not sure", "Other / Type my answer",
+  ]);
+  assert.equal(response.payload.readiness.ready, false);
+});
+
+test("yes, no, and not sure answers stay attached to the current testing-scope question", async () => {
+  mockSequence(ok("The requested pool tests are covered by the options below."));
+  const yesConversation = [];
+  let yesResult = await sendTurn(yesConversation, "My pool water is cloudy");
+  yesResult = await sendTurn(yesConversation, "pH", yesResult.payload.state);
+  yesResult = await sendTurn(yesConversation, "yes", yesResult.payload.state);
+  assert.equal(yesResult.payload.state.waterType, "pool");
+  assert.ok(yesResult.payload.state.parameters.includes("chlorine"));
+  assert.equal(yesResult.payload.readiness.ready, true);
+
+  const noConversation = [];
+  let noResult = await sendTurn(noConversation, "My pool water is cloudy");
+  noResult = await sendTurn(noConversation, "pH", noResult.payload.state);
+  noResult = await sendTurn(noConversation, "no", noResult.payload.state);
+  assert.equal(noResult.payload.state.waterType, "pool");
+  assert.equal(noResult.payload.state.testingScope, "specific");
+  assert.equal(noResult.payload.readiness.ready, true);
+
+  const unsureConversation = [];
+  let unsureResult = await sendTurn(unsureConversation, "My pool water is cloudy");
+  unsureResult = await sendTurn(unsureConversation, "not sure", unsureResult.payload.state);
+  assert.equal(unsureResult.payload.state.waterType, "pool");
+  assert.match(unsureResult.payload.reply, /No problem/);
+  assert.doesNotMatch(unsureResult.payload.reply, /What are you trying to check/);
+});
+
+test("guided questions always return a free-text option", async () => {
+  const response = await call({ body: { messages: [{ role: "user", content: "My pool water is cloudy" }] } });
+  assert.deepEqual(response.payload.options.at(-1), { label: "Other / Type my answer", value: "__other__" });
+  assert.ok(response.payload.options.length <= 4);
 });
 
 test("an explicit saltwater pool and named test parameters is ready immediately and returns products", async () => {
@@ -415,8 +557,9 @@ test("an explicit saltwater pool and named test parameters is ready immediately 
 test("drinking-water readiness asks only for the missing source", async () => {
   const res = await call({ body: { messages: [{ role: "user", content: "I need to test my drinking water." }] } });
   assert.equal(res.payload.readiness.ready, false);
-  assert.deepEqual(res.payload.readiness.missing, ["water_source"]);
-  assert.match(res.payload.reply, /tap, a private well, or another source/);
+  assert.deepEqual(res.payload.readiness.missing, ["water_source", "testing_scope"]);
+  assert.match(res.payload.reply, /source of your drinking water/);
+  assert.equal(res.payload.options.at(-1).value, "__other__");
   assert.equal(res.payload.products, undefined);
 
   mockUpstream(ok("I can help with a general tap-water screen."));
@@ -425,13 +568,27 @@ test("drinking-water readiness asks only for the missing source", async () => {
       messages: [
         { role: "user", content: "I need to test my drinking water." },
         { role: "assistant", content: res.payload.reply },
-        { role: "user", content: "It is tap water; I want a general screening." },
+        { role: "user", content: "tap" },
       ],
     },
   });
-  assert.equal(answered.payload.readiness.ready, true);
-  assert.equal(answered.payload.readiness.waterSource, "tap water");
-  assert.equal(answered.payload.readiness.missing.length, 0);
+  assert.equal(answered.payload.readiness.ready, false);
+  assert.equal(answered.payload.readiness.waterSource, "tap");
+  assert.deepEqual(answered.payload.readiness.missing, ["testing_scope"]);
+  assert.match(answered.payload.reply, /general screen.*specific concern/i);
+
+  const scoped = await call({
+    body: {
+      messages: [
+        { role: "user", content: "I need to test my drinking water." },
+        { role: "assistant", content: res.payload.reply },
+        { role: "user", content: "tap" },
+        { role: "assistant", content: answered.payload.reply },
+        { role: "user", content: "general screen" },
+      ],
+    },
+  });
+  assert.equal(scoped.payload.readiness.ready, true);
 });
 
 test("aquarium readiness asks only for freshwater or saltwater when its concern is known", async () => {
@@ -462,8 +619,8 @@ test("repeating the same unanswered pool message does not ask the identical ques
     body: { messages: [initial, { role: "assistant", content: first.payload.reply }, initial] },
   });
   assert.equal(repeated.payload.readiness.ready, false);
-  assert.doesNotMatch(repeated.payload.reply, /\?$/);
-  assert.match(repeated.payload.reply, /still need this detail/);
+  assert.equal(repeated.payload.state.waterType, "pool");
+  assert.equal(repeated.payload.options.at(-1).value, "__other__");
   assert.equal(repeated.payload.products, undefined);
 });
 
@@ -482,7 +639,7 @@ test("forwards the real upstream reply, server-side key, and trimmed base URL", 
 test("sends full conversation history, in order, after the server system prompt", async () => {
   mockUpstream(ok("Sure, happy to help."));
   const history = [
-    { role: "user", content: "pool" },
+    { role: "user", content: "I am curious about water testing" },
     { role: "assistant", content: "routine or troubleshooting?" },
     { role: "user", content: "troubleshooting" },
   ];
@@ -798,7 +955,7 @@ test("logs one structured line per request, without the key or message text", as
       usage: { prompt_tokens: 10, completion_tokens: 30, completion_tokens_details: { reasoning_tokens: 20 } },
     },
   });
-  await call({ body: { messages: [{ role: "user", content: "my very private pool question" }] } });
+  await call({ body: { messages: [{ role: "user", content: "my very private question about measurements" }] } });
 
   assert.equal(logs.out.length, 1);
   assert.equal(logs.err.length, 0);

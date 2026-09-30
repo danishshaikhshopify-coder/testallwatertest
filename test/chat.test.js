@@ -265,6 +265,137 @@ test("pool treatment clarification never repeats the same outstanding question c
   assert.equal(third.payload.products, undefined);
 });
 
+async function sendTurn(conversation, content, state = null) {
+  conversation.push({ role: "user", content });
+  const response = await call({ body: { messages: conversation, state } });
+  if (response.payload?.reply) conversation.push({ role: "assistant", content: response.payload.reply });
+  return response;
+}
+
+test("regression: pool, bromine, scope question, then pH retains state and never re-asks treatment", async () => {
+  mockUpstream(ok("Here are the relevant pool checks."));
+  const conversation = [];
+  let result = await sendTurn(conversation, "My pool water is cloudy");
+  let state = result.payload.state;
+  assert.match(result.payload.reply, /chlorine-treated, saltwater, or treated with bromine/);
+
+  result = await sendTurn(conversation, "bromine", state);
+  state = result.payload.state;
+  assert.equal(result.payload.readiness.state.treatment, "bromine");
+  assert.match(result.payload.reply, /recently tested the chlorine and pH levels/);
+
+  result = await sendTurn(conversation, "ph", state);
+  assert.equal(result.payload.state.waterType, "pool");
+  assert.equal(result.payload.state.treatment, "bromine");
+  assert.ok(result.payload.state.parameters.includes("ph"));
+  assert.match(result.payload.reply, /you'd like to check pH.*also like chlorine tested, or just pH/i);
+  assert.doesNotMatch(result.payload.reply, /chlorine-treated, saltwater, or treated with bromine/i);
+  assert.equal(result.payload.readiness.nextMissingField, "testingScope");
+
+  result = await sendTurn(conversation, "just pH", result.payload.state);
+  assert.equal(result.payload.state.testingScope, "specific");
+  assert.equal(result.payload.readiness.ready, true);
+  assert.doesNotMatch(result.payload.reply, /chlorine-treated, saltwater, or treated with bromine/i);
+  assert.equal(upstreamCalls.length, 1);
+});
+
+for (const [treatmentAnswer, treatment] of [["bromine", "bromine"], ["chlorine", "chlorine"]]) {
+  test(`pool, ${treatmentAnswer}, then pH keeps treatment and records pH`, async () => {
+    const conversation = [];
+    let response = await sendTurn(conversation, "My pool water is cloudy");
+    response = await sendTurn(conversation, treatmentAnswer, response.payload.state);
+    response = await sendTurn(conversation, "pH", response.payload.state);
+
+    assert.equal(response.payload.state.waterType, "pool");
+    assert.equal(response.payload.state.treatment, treatment);
+    assert.ok(response.payload.state.parameters.includes("ph"));
+    assert.deepEqual(response.payload.readiness.missing, ["testing_scope"]);
+    assert.match(response.payload.reply, /also like chlorine tested, or just pH/i);
+  });
+}
+
+test("pool, bromine, complete check advances through readiness", async () => {
+  mockUpstream(ok("For cloudy pool water, check pH, chlorine and alkalinity."));
+  const conversation = [];
+  let response = await sendTurn(conversation, "My pool water is cloudy");
+  response = await sendTurn(conversation, "bromine", response.payload.state);
+  response = await sendTurn(conversation, "I'd like a complete check", response.payload.state);
+
+  assert.equal(response.payload.readiness.ready, true);
+  assert.equal(response.payload.state.waterType, "pool");
+  assert.equal(response.payload.state.treatment, "bromine");
+  assert.equal(response.payload.state.testingScope, "complete");
+});
+
+test('pool, bromine, then "aquarium" asks for confirmation without switching', async () => {
+  const conversation = [];
+  let response = await sendTurn(conversation, "My pool water is cloudy");
+  response = await sendTurn(conversation, "bromine", response.payload.state);
+  response = await sendTurn(conversation, "aquarium", response.payload.state);
+
+  assert.equal(response.payload.state.waterType, "pool");
+  assert.equal(response.payload.state.treatment, "bromine");
+  assert.deepEqual(response.payload.state.pendingWaterTypeSwitch, { from: "pool", to: "aquarium" });
+  assert.equal(response.payload.readiness.ready, false);
+  assert.match(response.payload.reply, /switching to an aquarium test, or are we still discussing your pool/i);
+});
+
+test("explicitly switching from pool to aquarium changes water type and clears pool treatment", async () => {
+  const conversation = [];
+  let response = await sendTurn(conversation, "My pool water is cloudy");
+  response = await sendTurn(conversation, "bromine", response.payload.state);
+  response = await sendTurn(conversation, "I'm switching to my aquarium", response.payload.state);
+
+  assert.equal(response.payload.state.waterType, "aquarium");
+  assert.equal(response.payload.state.treatment, null);
+  assert.equal(response.payload.readiness.ready, false);
+  assert.match(response.payload.reply, /freshwater or saltwater/);
+});
+
+test("aquarium freshwater answer updates subtype and reaches model without a missing-state failure", async () => {
+  mockUpstream(ok("For a freshwater aquarium, check ammonia, nitrite and nitrate."));
+  const conversation = [];
+  let response = await sendTurn(conversation, "My aquarium fish are gasping at the surface");
+  response = await sendTurn(conversation, "freshwater", response.payload.state);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.state.waterType, "aquarium");
+  assert.equal(response.payload.state.waterSubtype, "freshwater");
+  assert.equal(response.payload.readiness.ready, true);
+  assert.equal(upstreamCalls.length, 1);
+});
+
+test("model question about a known pool treatment is rejected and replaced", async () => {
+  mockUpstream(ok("Is your pool chlorine-treated, saltwater, or treated with bromine?"));
+  const response = await call({
+    body: {
+      messages: [{
+        role: "user",
+        content: "My pool water is cloudy, treated with bromine, and I want a complete check.",
+      }],
+    },
+  });
+
+  assert.equal(response.payload.readiness.ready, true);
+  assert.equal(response.payload.state.treatment, "bromine");
+  assert.doesNotMatch(response.payload.reply, /chlorine-treated, saltwater, or treated with bromine/i);
+  assert.match(upstreamCalls[0].body.messages[0].content, /KNOWN FACTS:[\s\S]*Water type: pool[\s\S]*Treatment: bromine[\s\S]*DO NOT ASK FOR THESE AGAIN/);
+});
+
+test("treatment answers normalize equivalent wording", async () => {
+  for (const [answer, expected] of [
+    ["salt water", "saltwater"],
+    ["saltwater pool", "saltwater"],
+    ["chlorine treated", "chlorine"],
+    ["bromine pool", "bromine"],
+  ]) {
+    const conversation = [];
+    let response = await sendTurn(conversation, "My pool water is cloudy");
+    response = await sendTurn(conversation, answer, response.payload.state);
+    assert.equal(response.payload.state.treatment, expected, answer);
+  }
+});
+
 test("an explicit saltwater pool and named test parameters is ready immediately and returns products", async () => {
   delete process.env.SHOPIFY_CATALOG;
   resetCatalogState();

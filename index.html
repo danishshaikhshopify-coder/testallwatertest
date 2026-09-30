@@ -159,7 +159,7 @@ body{
 </div>
 <script>
 const panel=document.getElementById('panel'),messages=document.getElementById('messages'),input=document.getElementById('input'),send=document.getElementById('send'),typing=document.getElementById('typing'),status=document.getElementById('status');
-let busy=false,history=[];
+let busy=false,history=[],conversationState=null;
 /*<render>*/
 /* Markdown -> DOM. SAFETY: this only ever calls createElement / createTextNode /
    textContent / setAttribute on a fixed whitelist (p strong em code pre ul ol li a br hr).
@@ -416,7 +416,7 @@ async function ask(text){
   const res=await fetch("/api/chat",{
     method:"POST",
     headers:{"Content-Type":"application/json","Accept":"application/json"},
-    body:JSON.stringify({messages:history.slice(-12)}),
+    body:JSON.stringify({messages:history.slice(-12),state:conversationState}),
     signal:controller.signal
   });
   const data=await res.json().catch(e=>{if(e?.name==="AbortError")throw e;return {}});
@@ -426,6 +426,7 @@ async function ask(text){
   }
   const reply=data?.reply?.trim();
   if(!reply) throw new Error("The AI returned an empty response.");
+  conversationState=data?.state||data?.readiness?.state||conversationState;
   history.push({role:"assistant",content:reply});
   addMessage("assistant",reply);
   addProducts(data.products,data.readiness);
@@ -444,7 +445,7 @@ document.getElementById('form').onsubmit=e=>{e.preventDefault();const t=input.va
 const welcomeMessage=messages.children[0];
 function startSuggestedIntent(text){
  if(busy)return;
- history=[];
+ history=[];conversationState=null;
  messages.textContent="";
  if(welcomeMessage)messages.appendChild(welcomeMessage);
  ask(text);

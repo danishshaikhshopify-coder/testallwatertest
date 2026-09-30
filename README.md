@@ -9,7 +9,7 @@ Browser (index.html)  ──POST /api/chat──▶  Vercel function (api/chat.j
 
 - **Frontend** – `index.html`, a single static page. Every message is sent to `/api/chat` and the reply shown is the real model response. There is no demo or canned-reply fallback: if the request fails, the error is shown.
 - **Backend** – `api/chat.js`, a Vercel serverless function. It adds the system prompt and calls NaraRouter's OpenAI-compatible API with the Free-plan fallback chain (`nemotron-3-super-free`, then `nemotron-3-ultra-free`). Both models were confirmed on the current Free plan and returned real replies with the complete assistant prompt. Check `https://router.bynara.id/api/plans` before changing the list.
-- **Conversation context** – the browser keeps the conversation and sends the last 12 turns with each request; the server forwards them to the model after the system prompt.
+- **Conversation context** – the browser keeps the conversation and sends the last 12 turns plus the server-derived structured state with each request; the server forwards the turns to the model after the system prompt.
 
 ## Security
 
@@ -21,7 +21,7 @@ Browser (index.html)  ──POST /api/chat──▶  Vercel function (api/chat.j
 
 The assistant recommends **real products from the live TestAllWater store** (`https://testallwater.co.uk`, Shopify `test-all-water.myshopify.com`) and shows them as product cards under its answer: image, title, price, a "why it matches" line, **View Product**, and **Add to Cart** when there is nothing to choose.
 
-**Recommendation readiness gate.** Product cards are withheld until a deterministic check in `api/_needs.js` confirms the minimum context for the water type: the customer's goal, pool treatment and test scope where relevant, drinking-water source, or aquarium type. If a required detail is missing, the server asks one focused question and does not call Shopify or NaraRouter for that turn. Once ready, the existing product matcher runs unchanged; the browser also refuses to render product data unless the response explicitly marks recommendations ready. This is a rule-based gate, not an LLM probability score.
+**Recommendation readiness gate.** Product cards are withheld until a deterministic check in `api/_needs.js` confirms the minimum context for the water type: the customer's goal, pool treatment and test scope where relevant, drinking-water source, or aquarium type. A structured state tracks water type, treatment, testing scope, parameters, goal, and related subtype/source details across turns. The server updates it from the conversation, asks only for the next missing field, and requires explicit confirmation before switching water types. If a required detail is missing, the server asks one focused question and does not call Shopify or NaraRouter for that turn. Once ready, the existing product matcher runs unchanged; the browser also refuses to render product data unless the response explicitly marks recommendations ready. This is a rule-based gate, not an LLM probability score.
 
 **How the catalog is accessed.** Through the store's *public, read-only storefront endpoints* (`/search/suggest.json`, `/products/<handle>.js`, `/cart.js`). No Shopify API key, token or secret exists anywhere in this project, and what we read is exactly what a customer sees. The catalog has ~4,200 products, so nothing is bulk-downloaded: each conversation runs a few live searches (about 1 s) and re-reads only the three winners.
 

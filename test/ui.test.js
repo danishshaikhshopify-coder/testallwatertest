@@ -579,7 +579,7 @@ test("page: assistant replies render Markdown; the user's own text stays plain",
 
 test("page: a JSON-shaped model reply reaches the customer as normal formatted text, never as JSON", async () => {
   const upstream = scriptUpstream(
-    ok('{"response":"Thanks, I\'ve got that. Is this a **freshwater** or **saltwater** aquarium?"}'),
+    ok('{"response":"Thanks, I\'ve got that. For **freshwater** fish, check ammonia, nitrite and nitrate."}'),
     ok(JSON.stringify({ water_type: "aquarium", parameters: ["ammonia", "nitrite"], test_format: "liquid drop kit" })),
     ok('{"messages":[{"role":"user","content":"x"}]}')
   );
@@ -595,7 +595,7 @@ test("page: a JSON-shaped model reply reaches the customer as normal formatted t
   assert.equal(textOf(first.bubble), "Is your aquarium freshwater or saltwater?");
   assert.equal(
     second.bubble.children.map(toHtml).join(""),
-    "<p>Thanks, I've got that. Is this a <strong>freshwater</strong> or <strong>saltwater</strong> aquarium?</p>"
+    "<p>Thanks, I've got that. For <strong>freshwater</strong> fish, check ammonia, nitrite and nitrate.</p>"
   );
   assert.equal(
     third.bubble.children.map(toHtml).join(""),

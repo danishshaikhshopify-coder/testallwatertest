@@ -101,7 +101,7 @@ const TEST_SCOPE_CLARIFICATION = /you want to check pH.*also like to check chlor
 const SCOPE_COMPLETE = /\b(?:complete|full|routine|general|basic|broad|all[- ]round)\s+(?:water\s+)?(?:test|check|screen|screening|panel)\b|\b(?:haven't|have not|never|not yet)\s+(?:recently\s+)?tested\b|\b(?:already|recently)\s+tested\b|\btest results?\b|\bresults?\s+(?:are|show|showing|read|came)\b/i;
 const SWITCH_INTENT = /\b(?:switch(?:ing)?|change|changing|instead|actually|rather than|new test)\b/i;
 
-const WATER_TYPE_QUESTION = "What kind of water are you testing, such as a pool, hot tub, aquarium, tap water, or well water?";
+const WATER_TYPE_QUESTION = "What kind of water are you testing?";
 const TREATMENT_QUESTION = "Is your pool chlorine-treated, saltwater, or treated with bromine?";
 const SCOPE_CLARIFICATION = "Got it — you want to check pH. Would you also like to check chlorine?";
 const ISSUE_WORDS = ["cloudy", "green", "murky", "foamy", "smelly", "discoloured", "discolored"];
@@ -152,6 +152,7 @@ function answerToPendingSwitch(text, candidate) {
 
 function fieldAskedBy(reply) {
   if (/switch from .* to|switching to .* instead/i.test(reply)) return "waterTypeSwitch";
+  if (/what kind of water are you testing|where is the water from|which setting is closest/i.test(reply)) return "waterType";
   if (/freshwater or saltwater/i.test(reply)) return "aquariumType";
   if (/source of your drinking water|tap, .*private well/i.test(reply)) return "waterSource";
   if (/general screen, or checking a specific concern/i.test(reply)) return "testingScope";
@@ -185,6 +186,15 @@ export function deriveConversationState(conversation, previousState = null) {
     lastAskedField: ["waterType", "goal", "treatment", "testingScope", "waterSource", "aquariumType", "waterTypeSwitch"].includes(previousState?.lastAskedField)
       ? previousState.lastAskedField
       : null,
+    lastAskedOptions: Array.isArray(previousState?.lastAskedOptions)
+      ? previousState.lastAskedOptions
+        .filter((option) => typeof option?.label === "string" && typeof option?.value === "string")
+        .map(({ label, value }) => ({ label, value }))
+      : [],
+    lastAnswerWasAmbiguous: previousState?.lastAnswerWasAmbiguous === true,
+    waterTypeClarificationCount: Number.isInteger(previousState?.waterTypeClarificationCount)
+      ? Math.max(0, previousState.waterTypeClarificationCount)
+      : 0,
     pendingWaterTypeSwitch:
       validTypes.has(previousState?.pendingWaterTypeSwitch?.from) &&
       validTypes.has(previousState?.pendingWaterTypeSwitch?.to)
@@ -213,6 +223,7 @@ export function deriveConversationState(conversation, previousState = null) {
     if (turn.role !== "user") continue;
     const text = turn.content.trim();
     const requestedField = state.lastAskedField ?? fieldAskedBy(priorAssistant);
+    let unansweredField = null;
     users.push(text);
 
     const candidate = detectContext(text);
@@ -232,6 +243,8 @@ export function deriveConversationState(conversation, previousState = null) {
       else state.pendingWaterTypeSwitch = { from: state.waterType, to: candidate };
     } else if (candidate && !state.waterType) {
       state.waterType = candidate;
+      state.waterTypeClarificationCount = 0;
+      state.lastAnswerWasAmbiguous = false;
     } else if (candidate && state.waterType === candidate && isExplicitSwitch(text, candidate)) {
       resetWaterSpecificState(state, candidate);
     }
@@ -277,7 +290,7 @@ export function deriveConversationState(conversation, previousState = null) {
     const issues = ISSUE_WORDS.filter((word) => new RegExp(`\\b${word}\\b`, "i").test(text))
       .map((word) => word === "discoloured" ? "discolored" : word);
     if (issues.length) state.issues = unique([...state.issues, ...issues]);
-    if (PROBLEM.test(text)) state.goal = "troubleshooting";
+    if (PROBLEM.test(text) || /\b(?:too high|too low|high levels?|low levels?)\b/i.test(text)) state.goal = "troubleshooting";
     else if (!state.goal && (INTENT.test(text) || TESTWORD.test(text) || state.parameters.length)) {
       state.goal = state.parameters.length ? "parameter-specific testing" : "general testing";
     }
@@ -322,7 +335,13 @@ export function deriveConversationState(conversation, previousState = null) {
     }
     if (!state.goal && state.waterType === "aquarium" && state.waterSubtype) state.goal = "general testing";
     if (!state.goal && state.waterType === "drinking" && state.waterSource) state.goal = "general testing";
-    state.lastAskedField = null;
+    if (!state.waterType && requestedField === "waterType" && !candidate) {
+      const ambiguous = /^\s*(?:not sure|unsure|no|yes|maybe|i don't know)\s*[.!]?\s*$/i.test(text);
+      state.lastAnswerWasAmbiguous = ambiguous;
+      state.waterTypeClarificationCount += 1;
+      unansweredField = "waterType";
+    }
+    state.lastAskedField = unansweredField;
   }
   state.aquariumType = state.waterSubtype;
   return state;
@@ -381,8 +400,10 @@ export function guidedOptionsForField(field, state) {
   let choices = [];
   if (field === "waterType") choices = [
     { label: "Pool", value: "pool" },
+    { label: "Hot tub / spa", value: "hot tub" },
     { label: "Aquarium", value: "aquarium" },
     { label: "Drinking water", value: "drinking water" },
+    { label: "Well water", value: "well water" },
   ];
   else if (field === "aquariumType") choices = [
     { label: "Freshwater", value: "freshwater" },
@@ -434,7 +455,7 @@ export function guidedOptionsForField(field, state) {
           { label: "Specific parameter", value: "specific water concern" },
         ];
   }
-  return [...choices.slice(0, 3), OTHER_OPTION];
+  return [...choices.slice(0, field === "waterType" ? 5 : 3), OTHER_OPTION];
 }
 
 export function guidedResponse(state, readiness, latestUserMessage = "") {
@@ -443,7 +464,11 @@ export function guidedResponse(state, readiness, latestUserMessage = "") {
     ? clarifyWaterTypeSwitch(state)
     : questionForMissingField(field, state);
   const uncertain = /^\s*(?:no|not sure|unsure|maybe|i don't know)\s*[.!]?\s*$/i.test(latestUserMessage);
-  if (field === "waterTypeSwitch" && state.lastAskedField === "waterTypeSwitch" &&
+  if (field === "waterType" && state.lastAskedField === "waterType" && !detectContext(latestUserMessage)) {
+    reply = state.waterTypeClarificationCount <= 1
+      ? "No problem — we can narrow it down another way. Where is the water from?"
+      : "That's okay. Which setting is closest, or where is the water from?";
+  } else if (field === "waterTypeSwitch" && state.lastAskedField === "waterTypeSwitch" &&
     new RegExp(`^\\s*${state.pendingWaterTypeSwitch?.to}\\s*[.!]?\\s*$`, "i").test(latestUserMessage)) {
     reply = "I’ll keep your pool as-is for now. Choose “Yes, aquarium” to switch, or “No, keep pool” to continue.";
   } else if (field === "testingScope" && state.treatment && /^\s*(?:bromine|chlorine|salt\s*water|saltwater)\s*[.!]?\s*$/i.test(latestUserMessage)) {

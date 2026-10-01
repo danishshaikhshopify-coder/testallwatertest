@@ -454,6 +454,23 @@ test("page: Other focuses the text box and free text continues the existing conv
   assert.ok(page.isIdle());
 });
 
+test("page: unknown-water Other focuses free text without sending a fake answer", async () => {
+  await shopPage();
+  const requests = [];
+  const observedPage = bootPage((url, init) => {
+    requests.push(JSON.parse(init.body));
+    return apiFetch(url, init);
+  });
+  await observedPage.send("free chlorine");
+  const replies = allElements(observedPage.el("messages")).filter((element) => element.classes.has("tw-reply"));
+  assert.deepEqual(replies.map(textOf), [
+    "Pool", "Hot tub / spa", "Aquarium", "Drinking water", "Well water", "Other / Type my answer",
+  ]);
+  await observedPage.clickReply("Other / Type my answer");
+  assert.equal(observedPage.el("input").focused, true);
+  assert.equal(requests.length, 1, "the __other__ option is not sent as a fake user turn");
+});
+
 test("page: a pool question asks first, gathers scope, then shows real product cards", async () => {
   const { page, store, world } = await shopPage();
   await page.send(poolMessage);

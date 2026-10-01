@@ -293,6 +293,72 @@ async function sendTurn(conversation, content, state = null) {
   return response;
 }
 
+test("unknown water type asks once, preserves chlorine troubleshooting context, and accepts Pool", async () => {
+  const conversation = [];
+  let response = await sendTurn(conversation, "free chlorine");
+  assert.equal(response.payload.state.waterType, null);
+  assert.deepEqual(response.payload.state.parameters, ["chlorine"]);
+  assert.deepEqual(response.payload.options.map(({ label }) => label), [
+    "Pool", "Hot tub / spa", "Aquarium", "Drinking water", "Well water", "Other / Type my answer",
+  ]);
+  const initialQuestion = response.payload.reply;
+
+  response = await sendTurn(conversation, "My chlorine seems too high", response.payload.state);
+  assert.notEqual(response.payload.reply, initialQuestion);
+  assert.equal(response.payload.state.waterType, null);
+  assert.ok(response.payload.state.parameters.includes("chlorine"));
+  assert.equal(response.payload.state.goal, "troubleshooting");
+
+  response = await sendTurn(conversation, "not sure", response.payload.state);
+  assert.notEqual(response.payload.reply, initialQuestion);
+  assert.equal(response.payload.state.waterType, null);
+  assert.ok(response.payload.state.parameters.includes("chlorine"));
+  assert.equal(response.payload.state.goal, "troubleshooting");
+
+  response = await sendTurn(conversation, "Pool", response.payload.state);
+  assert.equal(response.payload.state.waterType, "pool");
+  assert.ok(response.payload.state.parameters.includes("chlorine"));
+  assert.equal(response.payload.state.goal, "troubleshooting");
+  assert.doesNotMatch(response.payload.reply, /what kind of water are you testing/i);
+});
+
+test("unknown water type accepts Aquarium then Freshwater without losing parameters", async () => {
+  mockUpstream(ok("For freshwater, the useful checks depend on your aquarium."));
+  const conversation = [];
+  let response = await sendTurn(conversation, "free chlorine");
+  response = await sendTurn(conversation, "My chlorine seems too high", response.payload.state);
+  response = await sendTurn(conversation, "not sure", response.payload.state);
+  response = await sendTurn(conversation, "Aquarium", response.payload.state);
+
+  assert.equal(response.payload.state.waterType, "aquarium");
+  assert.ok(response.payload.state.parameters.includes("chlorine"));
+  assert.match(response.payload.reply, /freshwater or saltwater/i);
+  assert.deepEqual(response.payload.options.map(({ label }) => label), [
+    "Freshwater", "Saltwater", "Not sure", "Other / Type my answer",
+  ]);
+
+  response = await sendTurn(conversation, "Freshwater", response.payload.state);
+  assert.equal(response.payload.state.waterType, "aquarium");
+  assert.equal(response.payload.state.waterSubtype, "freshwater");
+  assert.ok(response.payload.state.parameters.includes("chlorine"));
+  assert.doesNotMatch(response.payload.reply, /what kind of water are you testing/i);
+});
+
+test("repeated uncertainty about water type never repeats the exact same question consecutively", async () => {
+  const conversation = [];
+  let response = await sendTurn(conversation, "free chlorine");
+  const replies = [response.payload.reply];
+  response = await sendTurn(conversation, "not sure", response.payload.state);
+  replies.push(response.payload.reply);
+  assert.notEqual(replies[1], replies[0]);
+  response = await sendTurn(conversation, "not sure", response.payload.state);
+  replies.push(response.payload.reply);
+  assert.notEqual(replies[2], replies[1]);
+  assert.ok(response.payload.state.lastAskedOptions.some(({ value }) => value === "__other__"));
+  assert.equal(response.payload.state.lastAskedField, "waterType");
+  assert.equal(response.payload.state.lastAnswerWasAmbiguous, true);
+});
+
 test("regression: pool, bromine, scope question, then pH retains state and never re-asks treatment", async () => {
   mockUpstream(ok("Here are the relevant pool checks."));
   const conversation = [];

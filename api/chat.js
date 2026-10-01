@@ -536,6 +536,7 @@ export default async function handler(req, res) {
   if (!readiness.ready && (needs.wantsProducts || state.waterType || state.pendingWaterTypeSwitch)) {
     const guided = guidedResponse(state, readiness, userMessages.at(-1) ?? "");
     state.lastAskedField = guided.field;
+    state.lastAskedOptions = guided.options;
     state._lastAssistantReply = guided.reply;
     return res.status(200).json({
       reply: guided.reply,

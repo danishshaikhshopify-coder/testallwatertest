@@ -411,7 +411,7 @@ function addMessage(role,text,options=[]){
  row.appendChild(bubble);
  if(role==='assistant'&&Array.isArray(options)&&options.length){
   const replies=document.createElement('div');replies.className='tw-replies';replies.setAttribute('role','group');replies.setAttribute('aria-label','Suggested answers');
-  options.slice(0,4).forEach(option=>{
+  options.slice(0,6).forEach(option=>{
    if(!option||typeof option.label!=="string"||typeof option.value!=="string")return;
    const button=document.createElement('button');button.type='button';button.className='tw-reply'+(option.value==="__other__"?' other':'');button.textContent=option.label;
    button.onclick=()=>{if(busy)return;if(option.value==="__other__"){input.focus();return}ask(option.value)};

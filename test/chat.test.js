@@ -166,7 +166,7 @@ test("pool flow remembers cloudy and green issues, gathers parameters, and searc
     },
   });
   assert.equal(second.statusCode, 200);
-  assert.match(second.payload.reply, /Green pool water can point us toward a different set of tests/);
+  assert.match(second.payload.reply, /know either your chlorine or pH result/i);
   assert.ok(second.payload.state.issues.includes("cloudy"));
   assert.ok(second.payload.state.issues.includes("green"));
   assert.equal(second.payload.products, undefined);
@@ -357,6 +357,136 @@ test("repeated uncertainty about water type never repeats the exact same questio
   assert.ok(response.payload.state.lastAskedOptions.some(({ value }) => value === "__other__"));
   assert.equal(response.payload.state.lastAskedField, "waterType");
   assert.equal(response.payload.state.lastAnswerWasAmbiguous, true);
+});
+
+test("pool intent followed by green water advances goal and asks for test status", async () => {
+  const conversation = [];
+  let response = await sendTurn(conversation, "I want to test swimming pool water");
+  const goalQuestion = response.payload.reply;
+  assert.equal(response.payload.state.waterType, "pool");
+  assert.equal(response.payload.state.goal, null);
+  assert.equal(response.payload.readiness.nextMissingField, "goal");
+  assert.deepEqual(response.payload.options.map(({ label }) => label), [
+    "Routine testing", "Troubleshoot a problem", "Other / Type my answer",
+  ]);
+
+  response = await sendTurn(conversation, "green water", response.payload.state);
+  assert.notEqual(response.payload.reply, goalQuestion);
+  assert.equal(response.payload.state.waterType, "pool");
+  assert.equal(response.payload.state.goal, "troubleshooting");
+  assert.equal(response.payload.state.issue, "green_water");
+  assert.ok(response.payload.state.issueDetails.includes("green water"));
+  assert.match(response.payload.reply, /troubleshooting green water.*Have you tested your chlorine and pH yet/i);
+  assert.deepEqual(response.payload.options.map(({ label }) => label), [
+    "I haven't tested yet", "I know my chlorine", "I know my pH", "Full test", "Other / Type my answer",
+  ]);
+});
+
+test("green-water pool flow records not-tested then becomes ready only on Full test", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("These pool tests match your green-water concern.") });
+  const conversation = [];
+  let response = await sendTurn(conversation, "I want to test swimming pool water");
+  response = await sendTurn(conversation, "green water", response.payload.state);
+  response = await sendTurn(conversation, "I haven't tested yet", response.payload.state);
+  assert.equal(response.payload.state.waterType, "pool");
+  assert.equal(response.payload.state.goal, "troubleshooting");
+  assert.equal(response.payload.state.issue, "green_water");
+  assert.equal(response.payload.state.testingScope, "not-tested");
+  assert.equal(response.payload.readiness.ready, false);
+  assert.equal(response.payload.products, undefined);
+  assert.equal(store.calls.length, 0);
+
+  response = await sendTurn(conversation, "Full test", response.payload.state);
+  assert.equal(response.payload.state.waterType, "pool");
+  assert.equal(response.payload.state.goal, "troubleshooting");
+  assert.equal(response.payload.state.issue, "green_water");
+  assert.equal(response.payload.state.testingScope, "complete");
+  assert.equal(response.payload.readiness.ready, true);
+  assert.ok(response.payload.products?.length);
+  assert.ok(store.calls.some((entry) => entry.path === "/search/suggest.json"));
+});
+
+for (const [answer, parameter] of [["pH", "ph"], ["chlorine", "chlorine"]]) {
+  test(`pool green-water follow-up '${answer}' preserves issue context and records parameter`, async () => {
+    const conversation = [];
+    let response = await sendTurn(conversation, "I want to test swimming pool water");
+    response = await sendTurn(conversation, "green water", response.payload.state);
+    response = await sendTurn(conversation, answer, response.payload.state);
+    assert.equal(response.payload.state.waterType, "pool");
+    assert.equal(response.payload.state.goal, "troubleshooting");
+    assert.equal(response.payload.state.issue, "green_water");
+    assert.ok(response.payload.state.parameters.includes(parameter));
+  });
+}
+
+for (const [answer, issue] of [
+  ["cloudy water", "cloudy_water"],
+  ["my pool is green", "green_water"],
+  ["green pool", "green_water"],
+  ["pool water is green", "green_water"],
+  ["chlorine is too high", "high_chlorine"],
+  ["my chlorine is high", "high_chlorine"],
+  ["chlorine seems too high", "high_chlorine"],
+  ["chlorine is too low", "low_chlorine"],
+  ["my chlorine is low", "low_chlorine"],
+]) {
+  test(`pool short troubleshooting answer '${answer}' is normalized deterministically`, async () => {
+    const conversation = [];
+    let response = await sendTurn(conversation, "I want to test swimming pool water");
+    response = await sendTurn(conversation, answer, response.payload.state);
+    assert.equal(response.payload.state.waterType, "pool");
+    assert.equal(response.payload.state.goal, "troubleshooting");
+    assert.equal(response.payload.state.issue, issue);
+  });
+}
+
+test("repeating green water never returns the same assistant message consecutively", async () => {
+  const conversation = [];
+  let response = await sendTurn(conversation, "I want to test swimming pool water");
+  response = await sendTurn(conversation, "green water", response.payload.state);
+  const firstGreenReply = response.payload.reply;
+  response = await sendTurn(conversation, "green water", response.payload.state);
+  assert.notEqual(response.payload.reply, firstGreenReply);
+  assert.equal(response.payload.state.waterType, "pool");
+  assert.equal(response.payload.state.goal, "troubleshooting");
+  assert.equal(response.payload.state.issue, "green_water");
+});
+
+test("routine and troubleshooting short answers map to the requested goal field", async () => {
+  for (const [answer, expected] of [["routine", "routine_testing"], ["troubleshooting", "troubleshooting"]]) {
+    const conversation = [];
+    let response = await sendTurn(conversation, "I want to test swimming pool water");
+    response = await sendTurn(conversation, answer, response.payload.state);
+    assert.equal(response.payload.state.waterType, "pool");
+    assert.equal(response.payload.state.goal, expected);
+    assert.equal(response.payload.readiness.nextMissingField, "testingScope");
+  }
+});
+
+test("a model reply identical to the previous assistant turn is replaced deterministically", async () => {
+  mockUpstream(ok("Already noted."));
+  const response = await call({
+    body: {
+      messages: [{
+        role: "user",
+        content: "My pool is green and I want a complete test of chlorine and pH.",
+      }],
+      state: {
+        waterType: "pool",
+        goal: "troubleshooting",
+        issue: "green_water",
+        issueDetails: ["green water"],
+        parameters: ["chlorine", "ph"],
+        testingScope: "complete",
+        _lastAssistantReply: "Already noted.",
+      },
+    },
+  });
+  assert.equal(response.payload.ready, true);
+  assert.notEqual(response.payload.reply, "Already noted.");
 });
 
 test("regression: pool, bromine, scope question, then pH retains state and never re-asks treatment", async () => {

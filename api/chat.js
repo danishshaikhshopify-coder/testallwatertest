@@ -556,7 +556,7 @@ export default async function handler(req, res) {
   // The notes go into the single system message (some models mishandle several).
   const system = [
     SYSTEM_PROMPT,
-    `KNOWN FACTS:\n- Water type: ${state.waterType || "not known"}\n- Water subtype: ${state.waterSubtype || "not known"}\n- Water source: ${state.waterSource || "not known"}\n- Treatment: ${state.treatment || "not applicable or not known"}\n- Issues reported: ${state.issues?.length ? state.issues.join(", ") : "none"}\n- Testing scope: ${state.testingScope || "not known"}\n- Parameters: ${needs.parameters.length ? parameterLabels(needs.parameters).join(", ") : "not known"}\n- Goal: ${state.goal || "not known"}\nDO NOT ASK FOR THESE AGAIN. This structured state is authoritative; do not reset context for short answers. The deterministic next missing field is "${getNextMissingField(state)}". If it is not "ready", ask about ONLY that field and do not ask about any known field. Use any structured quick-reply options returned by the backend. If it is "ready", answer using the known facts without restarting clarification.`,
+    `KNOWN FACTS:\n- Water type: ${state.waterType || "not known"}\n- Water subtype: ${state.waterSubtype || "not known"}\n- Water source: ${state.drinkingSource || state.waterSource || "not known"}\n- Treatment: ${state.treatment || "not applicable or not known"}\n- Issue: ${state.issue || "none"}\n- Issue details: ${state.issueDetails?.length ? state.issueDetails.join(", ") : "none"}\n- Issues reported: ${state.issues?.length ? state.issues.join(", ") : "none"}\n- Testing scope: ${state.testingScope || "not known"}\n- Parameters: ${needs.parameters.length ? parameterLabels(needs.parameters).join(", ") : "not known"}\n- Goal: ${state.goal || "not known"}\nDO NOT ASK FOR THESE AGAIN. This structured state is authoritative; do not reset context for short answers. The deterministic next missing field is "${getNextMissingField(state)}". If it is not "ready", ask about ONLY that field and do not ask about any known field. Use any structured quick-reply options returned by the backend. If it is "ready", answer using the known facts without restarting clarification.`,
     readiness.ready ? "RECOMMENDATION STATUS: READY. The required context has been gathered. Do not ask for information already provided; give a recommendation based on the gathered details." : "",
     repeated ? REPEATED_MESSAGE_NOTE : "",
     productContext(needs, catalog),
@@ -585,13 +585,26 @@ export default async function handler(req, res) {
     const result = await callModel({ baseUrl, apiKey, messages, meta });
     const constrainedReply = constrainQuestionToState(result.reply, readiness);
     if (constrainedReply !== result.reply) meta.rejectedKnownFieldQuestion = true;
-    const reply = finalizeReply(constrainedReply, needs, catalog, meta);
+    let reply = finalizeReply(constrainedReply, needs, catalog, meta);
+    let options = [];
+    if (reply && reply === state._lastAssistantReply) {
+      if (readiness.ready) {
+        const parameterSummary = needs.parameters.length ? parameterLabels(needs.parameters).join(", ") : "the relevant parameters";
+        reply = `I have your ${state.waterType || "water"} test details noted. Here are the TestAllWater options for ${parameterSummary}.`;
+      } else {
+        const next = guidedResponse(state, readiness, userMessages.at(-1) ?? "");
+        reply = next.reply || "What kind of water are you testing?";
+        options = next.options;
+        state.lastAskedField = next.field;
+        state.lastAskedOptions = next.options;
+      }
+    }
     state._lastAssistantReply = reply;
     meta.model = result.model;
     meta.outcome = "ok";
     meta.replyChars = reply.length;
     logRequest(meta);
-    const body = { reply, options: [], model: result.model, readiness, state, ready: readiness.ready };
+    const body = { reply, options, model: result.model, readiness, state, ready: readiness.ready };
     if (catalog.products.length) body.products = catalog.products;
     return res.status(200).json(body);
   } catch (error) {

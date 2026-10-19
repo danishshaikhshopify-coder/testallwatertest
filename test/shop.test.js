@@ -13,8 +13,7 @@ const realFetch = globalThis.fetch;
 let logs;
 
 beforeEach(() => {
-  process.env.NARA_ROUTER_API_KEY = "test-key";
-  process.env.NARA_ROUTER_BASE_URL = "https://router.example/v1";
+  process.env.ANTHROPIC_API_KEY = "test-key";
   delete process.env.SHOPIFY_CATALOG;
   resetCatalogState();
   logs = { out: [], err: [] };
@@ -430,7 +429,7 @@ async function chat(messages, { reply = "A few tests will tell us what is going 
   const store = createFakeStore(storeOptions);
   const world = installWorld({ store, llm: llmReply(reply) });
   const res = await call(messages);
-  return { res, store, world, system: world.llmCalls[0]?.body.messages[0].content ?? "" };
+  return { res, store, world, system: world.llmCalls[0]?.body.system ?? "" };
 }
 
 test("chat: a pool question returns the model's answer plus real product cards", async () => {

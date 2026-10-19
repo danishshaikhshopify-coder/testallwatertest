@@ -102,4 +102,4 @@ export function installWorld({ store, llm }) {
 }
 
 export const llmReply = (content) => async () =>
-  new Response(JSON.stringify({ choices: [{ message: { content }, finish_reason: "stop" }] }), { status: 200 });
+  new Response(JSON.stringify({ content: [{ type: "text", text: content }], stop_reason: "end_turn" }), { status: 200 });

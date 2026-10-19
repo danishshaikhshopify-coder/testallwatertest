@@ -21,8 +21,7 @@ const realFetch = globalThis.fetch;
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 beforeEach(() => {
-  process.env.NARA_ROUTER_API_KEY = "test-key";
-  process.env.NARA_ROUTER_BASE_URL = "https://router.example/v1";
+  process.env.ANTHROPIC_API_KEY = "test-key";
   process.env.SHOPIFY_CATALOG = "off";
   mock.method(console, "log", () => {});
   mock.method(console, "error", () => {});
@@ -176,7 +175,7 @@ test("markdown: pathological input renders quickly (no catastrophic backtracking
 // Friendly errors
 // ---------------------------------------------------------------------------------
 
-const TECHNICAL = /HTTP|50\d|429|NaraRouter|Cloudflare|token|tried \d|\d+s each|environment|API key|AbortError|origin/i;
+const TECHNICAL = /HTTP|50\d|429|Anthropic|Claude|Cloudflare|token|tried \d|\d+s each|environment|API key|AbortError|origin/i;
 
 test("friendly errors: clean copy for timeout, busy and everything else (no technical detail)", () => {
   const timeout = friendlyError(Object.assign(new Error("The AI took too long to respond (tried 2 times, 9s each)."), { status: 504, code: "timeout" }));
@@ -271,9 +270,9 @@ function apiFetch(_url, init) {
   });
 }
 
-const ok = (content) => ({ body: { choices: [{ message: { content }, finish_reason: "stop" }] } });
+const ok = (content) => ({ body: { content: [{ type: "text", text: content }], stop_reason: "end_turn" } });
 
-// Scripted NaraRouter: what attempt 1, 2, 3... do. The last step repeats.
+// Scripted Anthropic API: what attempt 1, 2, 3... do. The last step repeats.
 function scriptUpstream(...steps) {
   const calls = [];
   globalThis.fetch = async (url, init) => {
@@ -657,8 +656,8 @@ test("page: the raw Markdown text (not HTML) is what goes back to the model as h
   await page.send("first question here");
   await page.send("a different follow-up");
   const sent = upstream.calls[1].body.messages;
-  assert.deepEqual(sent.map((m) => m.role), ["system", "user", "assistant", "user"]);
-  assert.equal(sent[2].content, "**Bold** answer");
+  assert.deepEqual(sent.map((m) => m.role), ["user", "assistant", "user"]);
+  assert.equal(sent[1].content, "**Bold** answer");
 });
 
 test("E2E duplicate: the same message twice reaches the model flagged as a repeat, and both replies render", async () => {
@@ -672,11 +671,10 @@ test("E2E duplicate: the same message twice reaches the model flagged as a repea
   await page.send(message);
 
   assert.equal(upstream.calls.length, 2);
-  const [first, second] = upstream.calls.map((c) => c.body.messages);
-  assert.doesNotMatch(first[0].content, /REPEATED MESSAGE/);
-  assert.deepEqual(second.map((m) => m.role), ["system", "user", "assistant", "user"]);
-  assert.match(second[0].content, /REPEATED MESSAGE/);
-  assert.equal(second.filter((m) => m.role === "system").length, 1);
+  const [firstCall, secondCall] = upstream.calls;
+  assert.doesNotMatch(firstCall.body.system, /REPEATED MESSAGE/);
+  assert.deepEqual(secondCall.body.messages.map((m) => m.role), ["user", "assistant", "user"]);
+  assert.match(secondCall.body.system, /REPEATED MESSAGE/);
 
   const rows = page.rows();
   assert.deepEqual(rows.map((r) => r.role), ["user", "assistant", "user", "assistant"]);
@@ -709,9 +707,9 @@ test("timeout recovery: after both retries fail the user sees a clean message, a
   // A different follow-up continues the conversation and keeps the earlier message as context.
   await page.send("It has been green for 3 days");
   const sent = upstream.calls[2].body.messages;
-  assert.deepEqual(sent.map((m) => m.role), ["system", "user", "user"]);
-  assert.equal(sent[1].content, "first question here");
-  assert.equal(sent[2].content, "It has been green for 3 days");
+  // Anthropic requires alternating roles, so the two consecutive user turns are merged.
+  assert.deepEqual(sent.map((m) => m.role), ["user"]);
+  assert.equal(sent[0].content, "first question here\nIt has been green for 3 days");
   assert.doesNotMatch(JSON.stringify(sent), /took longer|conversation is still here/);
 
   rows = page.rows();
@@ -736,8 +734,8 @@ test("timeout recovery: resending the SAME message after a failure is answered n
 
   await page.send(message); // the user just tries again
   const sent = upstream.calls[2].body.messages;
-  assert.deepEqual(sent.map((m) => m.role), ["system", "user"], "the unanswered first copy is collapsed");
-  assert.doesNotMatch(sent[0].content, /REPEATED MESSAGE/);
+  assert.deepEqual(sent.map((m) => m.role), ["user"], "the unanswered first copy is collapsed");
+  assert.doesNotMatch(upstream.calls[2].body.system, /REPEATED MESSAGE/);
   assert.equal(textOf(page.rows().at(-1).bubble), "Thanks. Is the pool indoor or outdoor?");
 });
 
@@ -767,7 +765,7 @@ test("errors from the server (busy, upstream failure, bad JSON) show clean copy,
   const cases = [
     [{ error: "The AI service is busy right now.", code: "rate_limited" }, 429, /try again in a moment/],
     [{ error: "The AI service returned an error (HTTP 502): Cloudflare origin", code: "upstream_error", detail: "x" }, 502, /something went wrong/],
-    [{ error: "NARA_ROUTER_API_KEY is not configured in Vercel." }, 500, /something went wrong/],
+    [{ error: "ANTHROPIC_API_KEY is not configured in Vercel." }, 500, /something went wrong/],
     [{ error: "The AI took too long to respond (tried 2 times, 9s each).", code: "timeout" }, 504, /took longer than expected/],
   ];
   for (const [payload, status, expected] of cases) {

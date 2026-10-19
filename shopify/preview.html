@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TestAllWater AI Assistant — section preview</title>
+<style>body{margin:0;padding:32px 16px;background:#eef3f6;font-family:Arial,sans-serif}
+.tw-preview-note{max-width:720px;margin:0 auto 20px;font-size:13px;color:#55606a;background:#fff;border:1px solid #dde3e8;border-radius:10px;padding:12px 14px}</style>
+</head>
+<body>
+<div class="tw-preview-note">Local preview of <code>shopify/sections/testallwater-ai-assistant.liquid</code>, rendered with mock section settings (not a real Shopify page). Regenerate with <code>node shopify/build-preview.mjs</code> after editing the section.</div>
+
+
+<div
+  class="tw-assistant-root tw-mode-inline"
+  id="tw-assistant-preview123"
+  data-tw-endpoint="/api/chat"
+  data-tw-store-domain="testallwater.co.uk"
+  data-tw-floating="false"
+  style="--tw-brand: #0a5f9f;"
+>
+  <style>
+    .tw-assistant-root, .tw-assistant-root *{box-sizing:border-box}
+    #tw-assistant-preview123{
+      --tw-brand-dark:#074a7c;--tw-brand-soft:#edf7fd;
+      --tw-ink:#15232e;--tw-muted:#71808b;--tw-line:#e5ebef;--tw-surface:#fff;--tw-bg:#f3f7fa;
+      font-family:"DM Sans",-apple-system,BlinkMacSystemFont,Arial,sans-serif;color:var(--tw-ink);
+      -webkit-font-smoothing:antialiased;
+    }
+    #tw-assistant-preview123 .tw-assistant-wrap{max-width:720px;margin:0 auto}
+    #tw-assistant-preview123.tw-mode-inline .tw-assistant-wrap{padding:16px 0}
+    #tw-assistant-preview123 .tw-card{
+      background:#fff;border:1px solid var(--tw-line);border-radius:20px;
+      box-shadow:0 20px 55px rgba(20,45,65,.09);overflow:hidden;
+    }
+    #tw-assistant-preview123 .tw-head{height:66px;padding:0 18px;border-bottom:1px solid var(--tw-line);display:flex;align-items:center;justify-content:space-between;background:#fff}
+    #tw-assistant-preview123 .tw-brand{display:flex;align-items:center;gap:11px;min-width:0}
+    #tw-assistant-preview123 .tw-ai-icon{
+      width:38px;height:38px;flex:0 0 38px;border-radius:12px;background:linear-gradient(135deg,var(--tw-brand),#1684cf);
+      display:grid;place-items:center;color:#fff;font-size:11px;font-weight:800;position:relative
+    }
+    #tw-assistant-preview123 .tw-ai-icon:after{content:"";position:absolute;right:-2px;bottom:-2px;width:9px;height:9px;background:#2eb36b;border:2px solid #fff;border-radius:50%}
+    #tw-assistant-preview123 .tw-brand strong{font-size:14px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #tw-assistant-preview123 .tw-online{font-size:11px;color:#77858f;margin-top:3px;display:flex;align-items:center;gap:6px}
+    #tw-assistant-preview123 .tw-online i{width:6px;height:6px;background:#2eb36b;border-radius:50%;display:inline-block;flex:0 0 6px}
+    #tw-assistant-preview123 .tw-headbtns{display:flex;gap:6px;flex:0 0 auto}
+    #tw-assistant-preview123 .tw-iconbtn{border:0;background:#f1f4f6;color:#596872;width:34px;height:34px;border-radius:10px;font-size:16px;cursor:pointer;transition:.2s;display:grid;place-items:center;line-height:1}
+    #tw-assistant-preview123 .tw-iconbtn:hover{background:#e7edf1}
+    #tw-assistant-preview123 .tw-body{height:min(72vh,560px);display:flex;flex-direction:column;background:#f8fafb}
+    #tw-assistant-preview123 .tw-messages{flex:1;overflow-y:auto;overflow-x:hidden;padding:22px 18px 12px;scroll-behavior:smooth;min-height:0}
+    #tw-assistant-preview123 .tw-messages::-webkit-scrollbar{width:7px}
+    #tw-assistant-preview123 .tw-messages::-webkit-scrollbar-thumb{background:#dce3e8;border-radius:20px}
+    #tw-assistant-preview123 .tw-row{display:flex;gap:9px;margin-bottom:16px}
+    #tw-assistant-preview123 .tw-row.user{justify-content:flex-end}
+    #tw-assistant-preview123 .tw-avatar{width:28px;height:28px;flex:0 0 28px;border-radius:9px;background:var(--tw-brand-soft);color:var(--tw-brand);display:grid;place-items:center;font-size:9px;font-weight:900;margin-top:2px}
+    #tw-assistant-preview123 .tw-bubble{max-width:min(520px,82%);font-size:14px;line-height:1.62;padding:12px 14px;border-radius:16px;background:#fff;border:1px solid #e3e9ed;box-shadow:0 4px 14px rgba(25,48,65,.04);white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+    #tw-assistant-preview123 .tw-row.user .tw-bubble{background:linear-gradient(135deg,var(--tw-brand),#0872bd);color:#fff;border-color:transparent;border-bottom-right-radius:5px}
+    #tw-assistant-preview123 .tw-row.assistant .tw-bubble{border-bottom-left-radius:5px}
+    #tw-assistant-preview123 .tw-bubble.md{white-space:normal}
+    #tw-assistant-preview123 .tw-bubble.md>:first-child{margin-top:0}
+    #tw-assistant-preview123 .tw-bubble.md>:last-child{margin-bottom:0}
+    #tw-assistant-preview123 .tw-bubble.md p{margin:0 0 .6em}
+    #tw-assistant-preview123 .tw-bubble.md ul,#tw-assistant-preview123 .tw-bubble.md ol{margin:.15em 0 .6em;padding-left:1.25em}
+    #tw-assistant-preview123 .tw-bubble.md li{margin:.2em 0}
+    #tw-assistant-preview123 .tw-bubble.md code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:#eef4f8;border-radius:6px;padding:.1em .38em}
+    #tw-assistant-preview123 .tw-bubble.md pre{margin:.3em 0 .6em;padding:10px 12px;background:#f1f6f9;border:1px solid #e3e9ed;border-radius:10px;overflow:auto;white-space:pre}
+    #tw-assistant-preview123 .tw-bubble.md pre code{background:none;padding:0;font-size:.88em}
+    #tw-assistant-preview123 .tw-bubble.md a{color:var(--tw-brand);text-decoration:underline;text-underline-offset:2px}
+    #tw-assistant-preview123 .tw-bubble.md hr{border:0;border-top:1px solid var(--tw-line);margin:.75em 0}
+    #tw-assistant-preview123 .tw-row.tw-products{margin-top:-6px;padding-left:37px}
+    #tw-assistant-preview123 .tw-pcards{display:flex;flex-direction:column;gap:9px;width:100%}
+    #tw-assistant-preview123 .tw-pcard{display:flex;gap:12px;padding:11px;background:#fff;border:1px solid #e3e9ed;border-radius:15px;box-shadow:0 4px 14px rgba(25,48,65,.04)}
+    #tw-assistant-preview123 .tw-pimg{flex:0 0 76px;width:76px;height:76px;border-radius:11px;background:#f3f7fa;border:1px solid #e8eef2;display:grid;place-items:center;overflow:hidden;text-decoration:none}
+    #tw-assistant-preview123 .tw-pimg img{width:100%;height:100%;object-fit:contain;padding:5px;box-sizing:border-box}
+    #tw-assistant-preview123 .tw-pimg.tw-noimg{color:#9aa5ad;font-size:10px;text-align:center;padding:5px}
+    #tw-assistant-preview123 .tw-pbody{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+    #tw-assistant-preview123 .tw-pvendor{font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:800;color:var(--tw-muted)}
+    #tw-assistant-preview123 .tw-ptitle{font-size:13.5px;font-weight:700;line-height:1.32;color:var(--tw-ink);text-decoration:none;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    #tw-assistant-preview123 .tw-ptitle:hover{color:var(--tw-brand)}
+    #tw-assistant-preview123 .tw-pmeta{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+    #tw-assistant-preview123 .tw-pprice{font-size:16px;font-weight:800;color:var(--tw-brand-dark);letter-spacing:-.01em}
+    #tw-assistant-preview123 .tw-pstock{font-size:10.5px;font-weight:700;color:#1a8a52;background:#e7f8ef;border-radius:999px;padding:3px 8px}
+    #tw-assistant-preview123 .tw-preason{margin:0;font-size:12px;line-height:1.5;color:#5b6b75}
+    #tw-assistant-preview123 .tw-pactions{display:flex;gap:7px;flex-wrap:wrap;margin-top:3px}
+    #tw-assistant-preview123 .tw-pbtn{display:inline-flex;align-items:center;justify-content:center;height:33px;padding:0 13px;border-radius:10px;font-size:12.5px;font-weight:700;text-decoration:none;cursor:pointer;white-space:nowrap}
+    #tw-assistant-preview123 .tw-pbtn-primary{background:linear-gradient(135deg,var(--tw-brand),#0872bd);color:#fff}
+    #tw-assistant-preview123 .tw-pbtn-ghost{background:#fff;color:var(--tw-brand);border:1px solid #cfe0ec}
+    #tw-assistant-preview123 .tw-welcome{padding:14px 15px;border:1px solid #dcecf5;background:linear-gradient(135deg,#f6fbfe,#fff);border-radius:15px;margin:2px 0 20px}
+    #tw-assistant-preview123 .tw-welcome b{font-size:13.5px}
+    #tw-assistant-preview123 .tw-welcome p{font-size:12.5px;color:#71808b;line-height:1.6;margin:6px 0 0}
+    #tw-assistant-preview123 .tw-quick{padding:9px 16px 4px;display:flex;gap:7px;flex-wrap:wrap;background:#fff;border-top:1px solid var(--tw-line)}
+    #tw-assistant-preview123 .tw-chip{border:1px solid #dce4e9;background:#fff;color:#34444f;border-radius:999px;padding:8px 12px;font-size:11.5px;font-weight:600;cursor:pointer}
+    #tw-assistant-preview123 .tw-chip:hover{border-color:#9cc7e4;color:var(--tw-brand);background:#f5fbff}
+    #tw-assistant-preview123 .tw-replies{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0 0 37px;max-width:min(520px,82%)}
+    #tw-assistant-preview123 .tw-reply{border:1px solid #d7e5ee;background:linear-gradient(180deg,#fff,#f8fbfd);color:#28516b;border-radius:999px;padding:7px 11px;font-size:11.5px;font-weight:650;cursor:pointer}
+    #tw-assistant-preview123 .tw-reply:hover{border-color:#9cc7e4;background:#f1f9fe}
+    #tw-assistant-preview123 .tw-reply.other{color:#6b7b85;background:#fff}
+    #tw-assistant-preview123 .tw-typing{display:none;padding:0 18px 8px;background:#fff;color:#7c8992;font-size:11.5px}
+    #tw-assistant-preview123 .tw-typing.show{display:block}
+    #tw-assistant-preview123 .tw-dots{display:inline-flex;gap:3px;margin-left:5px}
+    #tw-assistant-preview123 .tw-dots i{width:4px;height:4px;background:#87949d;border-radius:50%;animation:tw-dot-preview123 1s infinite}
+    #tw-assistant-preview123 .tw-dots i:nth-child(2){animation-delay:.15s}
+    #tw-assistant-preview123 .tw-dots i:nth-child(3){animation-delay:.3s}
+    @keyframes tw-dot-preview123{0%,70%,100%{opacity:.25}35%{opacity:1}}
+    #tw-assistant-preview123 .tw-inputbar{display:flex;gap:9px;padding:11px 14px;background:#fff;border-top:1px solid var(--tw-line)}
+    #tw-assistant-preview123 .tw-inputwrap{flex:1;min-width:0;display:flex;align-items:center;border:1px solid #d5dfe5;border-radius:13px;background:#fff;padding:0 12px}
+    #tw-assistant-preview123 .tw-inputwrap:focus-within{border-color:#8ab9d8;box-shadow:0 0 0 3px rgba(10,95,159,.08)}
+    #tw-assistant-preview123 .tw-input{width:100%;border:0;outline:0;padding:11px 0;font-size:14px;background:transparent;color:var(--tw-ink);font-family:inherit}
+    #tw-assistant-preview123 .tw-input::placeholder{color:#9aa5ad}
+    #tw-assistant-preview123 .tw-send{border:0;background:linear-gradient(135deg,var(--tw-brand),#0872bd);color:#fff;border-radius:12px;width:44px;flex:0 0 44px;font-size:17px;font-weight:800;cursor:pointer}
+    #tw-assistant-preview123 .tw-send:disabled{opacity:.45;cursor:not-allowed}
+    #tw-assistant-preview123 .tw-foot{text-align:center;background:#fff;color:#8b969d;font-size:10px;padding:0 14px 12px}
+    #tw-assistant-preview123.tw-mode-floating{position:fixed;right:18px;bottom:18px;z-index:999999;width:min(380px,calc(100vw - 36px))}
+    #tw-assistant-preview123.tw-mode-floating .tw-panel{display:none}
+    #tw-assistant-preview123.tw-mode-floating.tw-open .tw-panel{display:block}
+    #tw-assistant-preview123.tw-mode-floating .tw-launcher{display:flex}
+    #tw-assistant-preview123.tw-mode-floating.tw-open .tw-launcher{display:none}
+    #tw-assistant-preview123 .tw-launcher{display:none;align-items:center;justify-content:center;width:58px;height:58px;border-radius:50%;border:0;background:linear-gradient(135deg,var(--tw-brand),#0872bd);color:#fff;font-size:22px;cursor:pointer;box-shadow:0 10px 25px rgba(10,95,159,.3);margin-left:auto}
+    #tw-assistant-preview123.tw-mode-inline .tw-close-btn{display:none}
+    @media (max-width:520px){
+      #tw-assistant-preview123.tw-mode-floating{right:10px;bottom:10px;left:10px;width:auto}
+      #tw-assistant-preview123 .tw-body{height:min(78vh,520px)}
+      #tw-assistant-preview123 .tw-bubble{max-width:88%}
+      #tw-assistant-preview123 .tw-replies{margin-left:0;max-width:100%}
+      #tw-assistant-preview123 .tw-row.tw-products{padding-left:0}
+      #tw-assistant-preview123 .tw-pbtn{flex:1 1 100px;height:40px}
+      #tw-assistant-preview123 .tw-launcher{margin-left:0;align-self:flex-end}
+    }
+  </style>
+
+  <div class="tw-assistant-wrap">
+    <div class="tw-panel">
+      <div class="tw-card">
+        <div class="tw-head">
+          <div class="tw-brand">
+            <div class="tw-ai-icon">AI</div>
+            <div style="min-width:0">
+              <strong>TestAllWater AI Assistant</strong>
+              <div class="tw-online"><i></i><span id="tw-status-preview123">AI ready</span></div>
+            </div>
+          </div>
+          <div class="tw-headbtns">
+            <button type="button" class="tw-iconbtn" id="tw-restart-preview123" aria-label="Start a new conversation" title="Start a new conversation">↺</button>
+            <button type="button" class="tw-iconbtn tw-close-btn" id="tw-close-preview123" aria-label="Close">×</button>
+          </div>
+        </div>
+        <div class="tw-body">
+          <div class="tw-messages" id="tw-messages-preview123" role="log" aria-live="polite">
+            <div class="tw-welcome">
+              <b>Hi! Let's find the right test.</b>
+              <p>Describe your water issue in your own words. No technical terms needed — I'll ask the important questions as we go.</p>
+            </div>
+          </div>
+          <div class="tw-quick" id="tw-quick-preview123">
+            
+              
+                <button type="button" class="tw-chip">My pool water is cloudy</button>
+              
+            
+              
+                <button type="button" class="tw-chip">I need to test drinking water</button>
+              
+            
+              
+                <button type="button" class="tw-chip">My chlorine seems too high</button>
+              
+            
+              
+                <button type="button" class="tw-chip">I need a general water test</button>
+              
+            
+          </div>
+          <div class="tw-typing" id="tw-typing-preview123">AI is thinking<span class="tw-dots"><i></i><i></i><i></i></span></div>
+          <form class="tw-inputbar" id="tw-form-preview123">
+            <div class="tw-inputwrap">
+              <input class="tw-input" id="tw-input-preview123" placeholder="Tell me about your water…" autocomplete="off" aria-label="Your message">
+            </div>
+            <button type="submit" class="tw-send" id="tw-send-preview123" aria-label="Send">↑</button>
+          </form>
+          <div class="tw-foot">AI assistant · Products from the live TestAllWater catalog</div>
+        </div>
+      </div>
+    </div>
+    <button type="button" class="tw-launcher" id="tw-launcher-preview123" aria-label="Open water-testing assistant">AI</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var root = document.getElementById("tw-assistant-preview123");
+  // Every element this script needs is looked up by its own unique, section-id-suffixed id
+  // (not via root.querySelector), so this works in a plain DOM where elements are addressed
+  // by id, matching how the rest of this project's front-end code is already structured and
+  // tested (test/ui.test.js's fake DOM supports getElementById, not full CSS querying).
+  if (!root || root.getAttribute("data-tw-booted") === "1") return; // never double-initialize
+  root.setAttribute("data-tw-booted", "1");
+
+  var ENDPOINT = root.getAttribute("data-tw-endpoint") || "/api/chat";
+  var FLOATING = root.getAttribute("data-tw-floating") === "true";
+
+  var messages = document.getElementById("tw-messages-preview123");
+  var input = document.getElementById("tw-input-preview123");
+  var send = document.getElementById("tw-send-preview123");
+  var typing = document.getElementById("tw-typing-preview123");
+  var status = document.getElementById("tw-status-preview123");
+  var form = document.getElementById("tw-form-preview123");
+  var closeBtn = document.getElementById("tw-close-preview123");
+  var restartBtn = document.getElementById("tw-restart-preview123");
+  var launcher = document.getElementById("tw-launcher-preview123");
+  var quickWrap = document.getElementById("tw-quick-preview123");
+
+  var busy = false, chatHistory = [], conversationState = null;
+
+  /*<render>*/
+  /* Markdown -> DOM. SAFETY: this only ever calls createElement / createTextNode /
+     textContent / setAttribute on a fixed whitelist (p strong em code pre ul ol li a br hr).
+     It never uses innerHTML, so model output cannot inject markup or scripts; anything it
+     does not understand is shown as plain text. Links must be http(s). */
+  var MD_ESCAPABLE = /[\\`*_{}\[\]()#+\-.!|>~<&"']/;
+  var MD_SAFE_URL = /^https?:\/\/[^\s<>"']+$/i;
+  function mdFindClose(s, from, mk) {
+    for (var j = from; j < s.length; j++) {
+      var c = s[j];
+      if (c === "\\") { j++; continue; }
+      if (c === "`") {
+        var n = 1; while (s[j + n] === "`") n++;
+        var e = s.indexOf("`".repeat(n), j + n);
+        if (e > 0) { j = e + n - 1; continue; }
+      }
+      if (mk.length === 1 && c === mk && s[j + 1] === mk) { j++; continue; }
+      if (s.startsWith(mk, j) && j > from && !/\s/.test(s[j - 1]) && (mk[0] === "*" || !/[A-Za-z0-9]/.test(s[j + mk.length] || ""))) {
+        return j;
+      }
+    }
+    return -1;
+  }
+  function mdInline(s) {
+    var out = [], buf = "", i = 0;
+    var flush = function () { if (buf) { out.push({ t: "text", v: buf }); buf = ""; } };
+    while (i < s.length) {
+      var c = s[i];
+      if (c === "\\" && i + 1 < s.length && MD_ESCAPABLE.test(s[i + 1])) { buf += s[i + 1]; i += 2; continue; }
+      if (c === "`") {
+        var n = 1; while (s[i + n] === "`") n++;
+        var fence = "`".repeat(n), end = s.indexOf(fence, i + n);
+        if (end > i + n) { flush(); out.push({ t: "code", v: s.slice(i + n, end).replace(/^ (.+) $/, "$1") }); i = end + n; continue; }
+        buf += fence; i += n; continue;
+      }
+      if (c === "[") {
+        var m = /^\[([^\]\n]+)\]\(([^\s)]+)\)/.exec(s.slice(i));
+        if (m) {
+          if (MD_SAFE_URL.test(m[2])) { flush(); out.push({ t: "link", href: m[2], c: mdInline(m[1]) }); }
+          else buf += m[0];
+          i += m[0].length; continue;
+        }
+      }
+      if (c === "*" || c === "_") {
+        var startsWord = c === "*" || !/[A-Za-z0-9]/.test(s[i - 1] || "");
+        var run = s.startsWith(c.repeat(3), i) ? 3 : s.startsWith(c + c, i) ? 2 : 1;
+        var start = i + run;
+        if (startsWord && start < s.length && !/\s/.test(s[start])) {
+          var end2 = mdFindClose(s, start, c.repeat(run));
+          if (end2 > start) {
+            flush();
+            var inner = mdInline(s.slice(start, end2));
+            out.push(run === 3 ? { t: "strong", c: [{ t: "em", c: inner }] } : { t: run === 2 ? "strong" : "em", c: inner });
+            i = end2 + run; continue;
+          }
+        }
+        buf += c.repeat(run); i += run; continue;
+      }
+      buf += c; i++;
+    }
+    flush(); return out;
+  }
+  function mdAppendInline(nodes, doc, parent) {
+    for (var k = 0; k < nodes.length; k++) {
+      var n = nodes[k];
+      if (n.t === "text") parent.appendChild(doc.createTextNode(n.v));
+      else if (n.t === "code") { var e = doc.createElement("code"); e.textContent = n.v; parent.appendChild(e); }
+      else if (n.t === "link") {
+        var a = doc.createElement("a");
+        a.setAttribute("href", n.href); a.setAttribute("target", "_blank"); a.setAttribute("rel", "noopener noreferrer nofollow");
+        mdAppendInline(n.c, doc, a); parent.appendChild(a);
+      } else { var el = doc.createElement(n.t); mdAppendInline(n.c, doc, el); parent.appendChild(el); }
+    }
+  }
+  function mdAppendLines(text, doc, parent) {
+    text.split("\n").forEach(function (line, k) {
+      if (k) parent.appendChild(doc.createElement("br"));
+      mdAppendInline(mdInline(line), doc, parent);
+    });
+  }
+  function mdList(items, doc, parent) {
+    var make = function (it) { var l = doc.createElement(it.ordered ? "ol" : "ul"); if (it.ordered && it.num !== 1) l.setAttribute("start", String(it.num)); return l; };
+    var root2 = make(items[0]); parent.appendChild(root2);
+    var stack = [{ indent: items[0].indent, el: root2, lastLi: null }];
+    for (var k = 0; k < items.length; k++) {
+      var it = items[k];
+      while (stack.length > 1 && it.indent < stack[stack.length - 1].indent) stack.pop();
+      var top = stack[stack.length - 1];
+      if (it.indent > top.indent && top.lastLi) {
+        var sub = make(it); top.lastLi.appendChild(sub);
+        top = { indent: it.indent, el: sub, lastLi: null }; stack.push(top);
+      }
+      var li = doc.createElement("li"); mdAppendLines(it.text, doc, li);
+      top.el.appendChild(li); top.lastLi = li;
+    }
+  }
+  function renderMarkdown(text, doc, parent) {
+    var lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+    var blank = function (l) { return /^\s*$/.test(l); };
+    var fenceRe = /^\s{0,3}(`{3,}|~{3,})[^`]*$/, headRe = /^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$/;
+    var hrRe = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/, listRe = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
+    var isItem = function (l) { return listRe.test(l) && !hrRe.test(l); };
+    var blockStart = function (l) { return fenceRe.test(l) || headRe.test(l) || hrRe.test(l) || isItem(l); };
+    var i = 0;
+    while (i < lines.length) {
+      var line = lines[i];
+      if (blank(line)) { i++; continue; }
+      var fence = fenceRe.exec(line);
+      if (fence) {
+        var marker = fence[1], code = []; i++;
+        var closes = function (l) { var t = l.trim(); return t.length >= marker.length && t === t[0].repeat(t.length) && t[0] === marker[0]; };
+        while (i < lines.length && !closes(lines[i])) code.push(lines[i++]);
+        i++;
+        var pre = doc.createElement("pre"), c2 = doc.createElement("code");
+        c2.textContent = code.join("\n"); pre.appendChild(c2); parent.appendChild(pre); continue;
+      }
+      var head = headRe.exec(line);
+      if (head) {
+        var p = doc.createElement("p"), b = doc.createElement("strong");
+        mdAppendInline(mdInline(head[1]), doc, b); p.appendChild(b); parent.appendChild(p); i++; continue;
+      }
+      if (hrRe.test(line)) { parent.appendChild(doc.createElement("hr")); i++; continue; }
+      if (isItem(line)) {
+        var items = [];
+        while (i < lines.length) {
+          var l2 = lines[i], m2 = isItem(l2) ? listRe.exec(l2) : null;
+          if (m2) { items.push({ indent: m2[1].replace(/\t/g, "    ").length, ordered: /\d/.test(m2[2]), num: parseInt(m2[2], 10), text: m2[3] }); i++; continue; }
+          if (blank(l2)) { var j = i; while (j < lines.length && blank(lines[j])) j++; if (j < lines.length && isItem(lines[j])) { i = j; continue; } break; }
+          if (/^\s+\S/.test(l2) && !blockStart(l2)) { items[items.length - 1].text += "\n" + l2.trim(); i++; continue; }
+          break;
+        }
+        mdList(items, doc, parent); continue;
+      }
+      var para = [line]; i++;
+      while (i < lines.length && !blank(lines[i]) && !blockStart(lines[i])) para.push(lines[i++]);
+      var pEl = doc.createElement("p"); mdAppendLines(para.map(function (l) { return l.trim(); }).join("\n"), doc, pEl); parent.appendChild(pEl);
+    }
+  }
+  function friendlyError(e) {
+    if ((e && e.name === "AbortError") || (e && e.code === "timeout") || (e && e.status === 504))
+      return "Sorry, that took longer than expected and I couldn't get an answer in time. Please send your message again — our conversation is still here, so you won't need to start over.";
+    if ((e && e.code === "rate_limited") || (e && e.status === 429))
+      return "I'm getting a lot of questions right now. Please try again in a moment.";
+    return "Sorry, something went wrong on my side and I couldn't answer that. Please try again.";
+  }
+  // STORE_HOST/IMG_HOSTS default here (self-contained, so this block can be extracted and
+  // tested on its own, same as the rest of /*<render>*/); the real section setting value is
+  // applied right after this block closes, reassigning the same variables.
+  var STORE_HOST = "testallwater.co.uk";
+  var IMG_HOSTS = ["cdn.shopify.com", STORE_HOST];
+  var PRICE_OK = /^(?:From )?£\d{1,3}(?:,\d{3})*\.\d{2}$/;
+  function shopUrl(u, exactPath, prefix) {
+    try {
+      var x = new URL(u);
+      if (x.protocol !== "https:" || x.host !== STORE_HOST) return null;
+      if (exactPath && x.pathname !== exactPath) return null;
+      if (prefix && x.pathname.indexOf(prefix) !== 0) return null;
+      return x.href;
+    } catch (e) { return null; }
+  }
+  function imgUrl(u) {
+    try { var x = new URL(u); return x.protocol === "https:" && IMG_HOSTS.indexOf(x.host) !== -1 ? x.href : null; } catch (e) { return null; }
+  }
+  function cardLink(doc, cls, href, text) {
+    var a = doc.createElement("a"); a.className = cls;
+    a.setAttribute("href", href); a.setAttribute("target", "_blank"); a.setAttribute("rel", "noopener noreferrer");
+    if (text) a.textContent = text;
+    return a;
+  }
+  function productCard(p, doc) {
+    if (!p || typeof p !== "object" || p.available === false) return null;
+    var url = shopUrl(p.url, null, "/products/");
+    var title = typeof p.title === "string" ? p.title.trim().slice(0, 200) : "";
+    var price = p.price && typeof p.price.display === "string" ? (p.price.from ? "From " : "") + p.price.display : "";
+    if (!url || !title || !PRICE_OK.test(price)) return null;
+
+    var card = doc.createElement("article"); card.className = "tw-pcard";
+    card.setAttribute("role", "listitem"); card.setAttribute("aria-label", title);
+
+    var src = imgUrl(p.image);
+    var imgBox;
+    if (src) {
+      imgBox = cardLink(doc, "tw-pimg", url); imgBox.setAttribute("aria-label", "View " + title);
+      var img = doc.createElement("img");
+      img.setAttribute("src", src); img.setAttribute("alt", title); img.setAttribute("loading", "lazy");
+      img.setAttribute("width", "76"); img.setAttribute("height", "76");
+      if (img.addEventListener) img.addEventListener("error", function () { imgBox.className = "tw-pimg tw-noimg"; imgBox.textContent = "No image"; });
+      imgBox.appendChild(img);
+    } else {
+      imgBox = doc.createElement("div"); imgBox.className = "tw-pimg tw-noimg"; imgBox.textContent = "No image";
+    }
+    card.appendChild(imgBox);
+
+    var body = doc.createElement("div"); body.className = "tw-pbody";
+    if (typeof p.vendor === "string" && p.vendor.trim()) {
+      var v = doc.createElement("div"); v.className = "tw-pvendor"; v.textContent = p.vendor.trim().slice(0, 60); body.appendChild(v);
+    }
+    body.appendChild(cardLink(doc, "tw-ptitle", url, title));
+
+    var meta = doc.createElement("div"); meta.className = "tw-pmeta";
+    var pr = doc.createElement("span"); pr.className = "tw-pprice"; pr.textContent = price; meta.appendChild(pr);
+    var st = doc.createElement("span"); st.className = "tw-pstock"; st.textContent = "In stock"; meta.appendChild(st);
+    body.appendChild(meta);
+
+    if (typeof p.reason === "string" && p.reason.trim()) {
+      var r = doc.createElement("p"); r.className = "tw-preason"; r.textContent = p.reason.trim().slice(0, 240); body.appendChild(r);
+    }
+
+    var actions = doc.createElement("div"); actions.className = "tw-pactions";
+    actions.appendChild(cardLink(doc, "tw-pbtn tw-pbtn-primary", url, "View Product"));
+    var cart = shopUrl(p.addToCartUrl, "/cart/add");
+    if (cart) {
+      var cartId = new URL(cart).searchParams.get("id") || "";
+      if (/^\d+$/.test(cartId)) actions.appendChild(cardLink(doc, "tw-pbtn tw-pbtn-ghost", cart, "Add to Cart"));
+    }
+    body.appendChild(actions);
+
+    card.appendChild(body);
+    return card;
+  }
+  function renderProductCards(list, doc, parent) {
+    var shown = [];
+    var arr = Array.isArray(list) ? list.slice(0, 3) : [];
+    for (var i = 0; i < arr.length; i++) {
+      var card = productCard(arr[i], doc);
+      if (card) { parent.appendChild(card); shown.push(arr[i]); }
+    }
+    return shown;
+  }
+  /*</render>*/
+
+  // Apply the real "Storefront domain" section setting now that the render block above (kept
+  // self-contained, with its own default, for testability) has finished declaring STORE_HOST.
+  STORE_HOST = (root.getAttribute("data-tw-store-domain") || STORE_HOST).toLowerCase();
+  IMG_HOSTS = ["cdn.shopify.com", STORE_HOST];
+
+  var shownProducts = {};
+  function addProducts(list, readiness) {
+    if (!readiness || readiness.ready !== true) return;
+    var fresh = (Array.isArray(list) ? list : []).filter(function (p) {
+      return p && typeof p.url === "string" && !shownProducts[p.url];
+    });
+    if (!fresh.length) return;
+    var wrap = document.createElement("div"); wrap.className = "tw-pcards"; wrap.setAttribute("role", "list"); wrap.setAttribute("aria-label", "Matching products");
+    var rendered = renderProductCards(fresh, document, wrap);
+    if (!rendered.length) return;
+    rendered.forEach(function (p) { shownProducts[p.url] = true; });
+    var row = document.createElement("div"); row.className = "tw-row assistant tw-products";
+    row.appendChild(wrap); messages.appendChild(row);
+    requestAnimationFrame(function () { messages.scrollTop = messages.scrollHeight; });
+  }
+  function addMessage(role, text, options) {
+    options = options || [];
+    var row = document.createElement("div"); row.className = "tw-row " + role;
+    if (role === "assistant" && options.length) row.classList.add("has-options");
+    if (role === "assistant") { var av = document.createElement("div"); av.className = "tw-avatar"; av.textContent = "AI"; row.appendChild(av); }
+    var bubble = document.createElement("div"); bubble.className = "tw-bubble";
+    if (role === "assistant") { bubble.classList.add("md"); renderMarkdown(text, document, bubble); } else bubble.textContent = text;
+    row.appendChild(bubble);
+    if (role === "assistant" && options.length) {
+      var replies = document.createElement("div"); replies.className = "tw-replies"; replies.setAttribute("role", "group"); replies.setAttribute("aria-label", "Suggested answers");
+      options.slice(0, 6).forEach(function (option) {
+        if (!option || typeof option.label !== "string" || typeof option.value !== "string") return;
+        var button = document.createElement("button"); button.type = "button";
+        button.className = "tw-reply" + (option.value === "__other__" ? " other" : "");
+        button.textContent = option.label;
+        button.onclick = function () {
+          if (busy) return;
+          if (option.value === "__other__") { input.focus(); return; }
+          ask(option.value);
+        };
+        replies.appendChild(button);
+      });
+      if (replies.children.length) row.appendChild(replies);
+    }
+    messages.appendChild(row);
+    requestAnimationFrame(function () { messages.scrollTop = messages.scrollHeight; });
+  }
+  function setBusy(v) { busy = v; send.disabled = v; input.disabled = v; typing.classList.toggle("show", v); }
+
+  function ask(text) {
+    if (!text || busy) return;
+    addMessage("user", text);
+    chatHistory.push({ role: "user", content: text });
+    setBusy(true);
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var timer = setTimeout(function () { if (controller) controller.abort(); }, 40000);
+    fetch(ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ messages: chatHistory.slice(-12), state: conversationState }),
+      signal: controller ? controller.signal : undefined,
+    })
+      .then(function (res) {
+        return res.json().catch(function (e) {
+          if (e && e.name === "AbortError") throw e;
+          return {};
+        }).then(function (data) {
+          if (!res.ok) {
+            var err = new Error((data && data.error) || ("Server error (" + res.status + ")"));
+            err.status = res.status; err.code = data && data.code;
+            throw err;
+          }
+          return data;
+        });
+      })
+      .then(function (data) {
+        var reply = data && data.reply ? String(data.reply).trim() : "";
+        if (!reply) throw new Error("The AI returned an empty response.");
+        conversationState = (data && data.state) || (data && data.readiness && data.readiness.state) || conversationState;
+        chatHistory.push({ role: "assistant", content: reply });
+        addMessage("assistant", reply, Array.isArray(data.options) ? data.options : []);
+        addProducts(data.products, data.readiness);
+      })
+      .catch(function (e) {
+        // The failed exchange is not added to history as an assistant turn, so the next
+        // message continues the conversation normally; the server treats a resent message
+        // as unanswered. Never show the raw error (e.g. a network error object, a server
+        // stack trace, or an API error body) to the customer — only the friendly copy.
+        if (typeof console !== "undefined" && console.error) console.error("TestAllWater AI request failed:", e);
+        addMessage("assistant", friendlyError(e));
+      })
+      .finally(function () {
+        clearTimeout(timer);
+        setBusy(false);
+        input.focus();
+      });
+  }
+
+  var welcomeMessage = messages.children[0];
+  function resetConversation() {
+    if (busy) return;
+    chatHistory = [];
+    conversationState = null;
+    shownProducts = {};
+    messages.textContent = "";
+    if (welcomeMessage) messages.appendChild(welcomeMessage);
+  }
+  function startSuggestedIntent(text) {
+    if (busy) return;
+    resetConversation();
+    ask(text);
+  }
+
+  // Direct children, not querySelectorAll: these quick-reply chips are Liquid-rendered static
+  // HTML scoped to this section's own container, so each section instance only ever wires up
+  // its own buttons, never another instance's on the same page.
+  Array.prototype.forEach.call(quickWrap.children, function (b) {
+    b.onclick = function () { startSuggestedIntent(b.textContent.trim()); };
+  });
+  if (restartBtn) restartBtn.onclick = resetConversation;
+  if (form) form.onsubmit = function (e) {
+    e.preventDefault();
+    var t = input.value.trim();
+    if (t) { input.value = ""; ask(t); }
+  };
+  // The close button is only ever visible in floating mode — CSS already hides it in inline
+  // mode (`.tw-mode-inline .tw-close-btn{display:none}`), so it only needs a click handler here.
+  if (FLOATING) {
+    if (launcher) launcher.onclick = function () { root.classList.add("tw-open"); input.focus(); };
+    if (closeBtn) closeBtn.onclick = function () { root.classList.remove("tw-open"); };
+  }
+  if (status) status.textContent = "AI ready";
+})();
+</script>
+
+
+
+</body>
+</html>

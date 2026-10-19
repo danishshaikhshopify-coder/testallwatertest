@@ -5,6 +5,8 @@
 //
 // (Files starting with "_" in /api are helpers, not Vercel functions.)
 
+import { issueIndicates } from "./_knowledge.js";
+
 const p = (id, label, user, product = user, rare = false) => ({ id, label, user, product, rare });
 
 // user:    how a customer mentions the parameter
@@ -88,6 +90,21 @@ const TESTWORD = /\btest(?:s|ing|ed|er|ers)?\b|\bkit\b|\bstrips?\b|\bmeter\b|\bp
 const INTENT = /\b(buy|purchase|order|price|cost|how much|which (?:test|kit|strips?|product)|what (?:test|kit|strips?|product)|recommend|suggest|looking for|i need (?:a|an|some)|do you (?:sell|have|stock)|where can i (?:get|buy)|shop|product)s?\b/i;
 const HAS_VALUE = /\b\d+(?:[.,]\d+)?\s*(?:ppm|mg\/?l|ppb|µg\/?l|ug\/?l|µs|us\/?cm|ms\/?cm|°?[fd]h|dh|%)|\b(?:ph|chlorine|alkalinity|nitrate|nitrite|ammonia|cya|cyanuric acid|hardness|phosphate|tds|bromine|iron|copper|lead)\s*(?:is|was|of|=|:|at|reads?|read|showing|shows?)?\s*\d/i;
 
+// An explicit request to skip ahead to products, or frustration with the questions. Once seen,
+// the readiness gate stops asking the "soft" fields (goal, scope, subtype/source) and works
+// with whatever is already known — help first, sell second, per the product-recommendation
+// rules this assistant follows. A minimal anchor (the kind of water) is still needed to search
+// on, so that single question is not skipped.
+const SHOW_PRODUCTS_REQUEST = /\bjust show me\b|\bshow me (?:the |some )?products\b|\bshow me what you have\b|\bskip (?:the )?questions\b|\bskip ahead\b|\bno more questions\b|\b(?:just )?want(?:s|ed)? to see (?:the )?(?:products|options)\b|\bcan you just (?:show|recommend)\b|\bjust (?:recommend|suggest) something\b|\benough questions\b|\bjust tell me what to (?:buy|get)\b/i;
+const FRUSTRATION = /\bstop asking(?: me)?\b|\btoo many questions\b|\bthis is taking (?:too long|forever)\b|\bi(?:'m| am) frustrat\w*\b|\bannoy(?:ed|ing)\b|\bjust answer\b|\bi don'?t want to answer (?:more|any more) questions\b/i;
+const RELAXED_READINESS_TRIGGER = new RegExp(`${SHOW_PRODUCTS_REQUEST.source}|${FRUSTRATION.source}`, "i");
+
+// A single "not sure" is normal conversation (handled gracefully per-field below); two in a row
+// signals the customer genuinely can't give more detail, which is its own kind of frustration —
+// switch to the same helpful fallback as an explicit request rather than asking a third time.
+const GENERAL_UNCERTAIN = /^\s*(?:not sure|unsure|no idea|maybe|i don'?t know)\s*[.!]?\s*$/i;
+const UNCERTAIN_STREAK_FOR_RELAXED = 2;
+
 function detectContext(text) {
   for (const c of CONTEXTS) if (c.user.test(text)) return c.id;
   return null;
@@ -153,6 +170,13 @@ function resetWaterSpecificState(state, waterType) {
   state.waterSubtype = null;
   state.waterSource = null;
   state.pendingWaterTypeSwitch = null;
+  // A named issue (cloudy/green/high or low chlorine) is pool/spa-specific vocabulary; it must
+  // not silently carry over as a stale "known fact" once the conversation is about a different
+  // kind of water (it would otherwise reach the system prompt and the knowledge layer as if it
+  // still applied, found via Phase 5 QA on a pool -> aquarium switch).
+  state.issue = null;
+  state.issueDetails = [];
+  state.issues = [];
 }
 
 function answerToPendingSwitch(text, candidate) {
@@ -220,6 +244,8 @@ export function deriveConversationState(conversation, previousState = null) {
         ? { from: previousState.pendingWaterTypeSwitch.from, to: previousState.pendingWaterTypeSwitch.to }
         : null,
     _lastAssistantReply: typeof previousState?._lastAssistantReply === "string" ? previousState._lastAssistantReply : null,
+    relaxedReadiness: previousState?.relaxedReadiness === true,
+    uncertainStreak: Number.isInteger(previousState?.uncertainStreak) ? Math.max(0, previousState.uncertainStreak) : 0,
   };
   const users = [];
   const lastUserIndex = conversation.findLastIndex((turn) => turn.role === "user");
@@ -245,6 +271,10 @@ export function deriveConversationState(conversation, previousState = null) {
     let unansweredField = null;
     state.lastAnsweredField = requestedField;
     users.push(text);
+
+    if (RELAXED_READINESS_TRIGGER.test(text)) state.relaxedReadiness = true;
+    state.uncertainStreak = GENERAL_UNCERTAIN.test(text) ? state.uncertainStreak + 1 : 0;
+    if (state.uncertainStreak >= UNCERTAIN_STREAK_FOR_RELAXED) state.relaxedReadiness = true;
 
     const candidate = detectContext(text);
     if (state.pendingWaterTypeSwitch) {
@@ -288,7 +318,7 @@ export function deriveConversationState(conversation, previousState = null) {
       if (subtype && (requestedField === "waterType" || requestedField === "aquariumType" ||
         /freshwater or saltwater/i.test(priorAssistant) || /\b(?:aquarium|fish tank|freshwater|fresh water|saltwater|salt water)\b/i.test(text))) {
         state.waterSubtype = subtype;
-      } else if (requestedField === "aquariumType" && /^\s*(?:not sure|unsure|i don't know)\s*[.!]?\s*$/i.test(text)) {
+      } else if (requestedField === "aquariumType" && /^\s*(?:not sure|unsure|no idea|i don't know)\s*[.!]?\s*$/i.test(text)) {
         state.waterSubtype = "unknown";
       }
     }
@@ -297,7 +327,7 @@ export function deriveConversationState(conversation, previousState = null) {
       state.waterSource ??= detectWaterSource(text);
       if (!state.waterSource && requestedField === "waterSource" && /^\s*tap\s*[.!]?\s*$/i.test(text)) state.waterSource = "tap";
       if (!state.waterSource && requestedField === "waterSource" &&
-        /^\s*(?:yes|no|not sure|unsure|i don't know)\s*[.!]?\s*$/i.test(text)) state.waterSource = "unknown";
+        /^\s*(?:yes|no|not sure|unsure|no idea|i don't know)\s*[.!]?\s*$/i.test(text)) state.waterSource = "unknown";
     }
     if (!state.waterSource && state.drinkingSource) state.waterSource = state.drinkingSource;
 
@@ -359,7 +389,7 @@ export function deriveConversationState(conversation, previousState = null) {
         }
       } else if (/^\s*no\s*[.!]?\s*$/i.test(text) && state.testingScope === "specific-pending") {
         state.testingScope = "specific";
-      } else if (/^\s*(?:not sure|unsure|maybe|i don't know)\s*[.!]?\s*$/i.test(text)) {
+      } else if (/^\s*(?:not sure|unsure|maybe|no idea|i don't know)\s*[.!]?\s*$/i.test(text)) {
         if (requestedField === "waterSource") state.waterSource = "unknown";
       }
     }
@@ -379,7 +409,7 @@ export function deriveConversationState(conversation, previousState = null) {
     if (!state.goal && state.waterType === "drinking" && state.waterSource) state.goal = "general testing";
     state.drinkingSource = state.waterSource;
     if (!state.waterType && requestedField === "waterType" && !candidate) {
-      const ambiguous = /^\s*(?:not sure|unsure|no|yes|maybe|i don't know)\s*[.!]?\s*$/i.test(text);
+      const ambiguous = /^\s*(?:not sure|unsure|no|yes|maybe|no idea|i don't know)\s*[.!]?\s*$/i.test(text);
       state.lastAnswerWasAmbiguous = ambiguous;
       state.waterTypeClarificationCount += 1;
       unansweredField = "waterType";
@@ -393,12 +423,30 @@ export function deriveConversationState(conversation, previousState = null) {
 export function getNextMissingField(state) {
   if (!state.waterType) return "waterType";
   if (state.pendingWaterTypeSwitch) return "waterTypeSwitch";
+  // The customer asked to skip ahead: a minimal anchor (the kind of water) is still required
+  // to search on, but the remaining "soft" fields are no longer asked for.
+  if (state.relaxedReadiness) return "ready";
   if (!state.goal) return "goal";
   if (state.waterType === "aquarium" && !state.waterSubtype) return "aquariumType";
   if ((state.waterType === "drinking" || state.waterType === "well") && !state.waterSource) return "waterSource";
   if (["pool", "spa", "drinking", "well"].includes(state.waterType) &&
     (!state.testingScope || ["specific-pending", "not-tested"].includes(state.testingScope))) return "testingScope";
   return "ready";
+}
+
+// Teach while diagnosing: the first time a pool issue is raised, briefly explain what it may
+// indicate (from api/_knowledge.js) alongside the next useful question, instead of asking a
+// bare question. Phrasing stays short — one teaching sentence, then the question.
+function troubleshootingIntro(state) {
+  const issueLabel = state.issueDetails.at(-1) ?? "your pool water";
+  const indicates = issueIndicates(state.waterType, state.issue);
+  const teach = indicates ? ` This often points to ${indicates}.` : "";
+  return `Got it — you're troubleshooting ${issueLabel} in your pool.${teach} Have you tested your chlorine and pH yet?`;
+}
+
+function cloudyIntro(state) {
+  const indicates = issueIndicates(state.waterType, "cloudy_water");
+  return `Got it — cloudy pool water can have a few causes${indicates ? `: ${indicates}` : ""}. What are you trying to check?`;
 }
 
 export function questionForMissingField(field, state) {
@@ -416,15 +464,15 @@ export function questionForMissingField(field, state) {
       ["green_water", "cloudy_water", "high_chlorine", "low_chlorine"].includes(state.issue)) {
       if (state.testingScope === "not-tested") return "No problem. Which result would you like to check first, or would you prefer a full test?";
       if (state.lastAnsweredField === "goal") {
-        return `Got it — you're troubleshooting ${state.issueDetails.at(-1) ?? "your pool water"} in your pool. Have you tested your chlorine and pH yet?`;
+        return troubleshootingIntro(state);
       }
       if (state.lastAnsweredField === null && state.issue === "cloudy_water") {
-        return "Got it — cloudy pool water can have a few causes. What are you trying to check?";
+        return cloudyIntro(state);
       }
       if (state.parameters.includes("ph")) return "Got it — you want to check pH. Would you also like to check chlorine?";
       if (state.parameters.includes("chlorine")) return "Got it — you know your chlorine level. Do you also know your pH, or would you prefer a full test?";
       if (state.lastAnsweredField === "testingScope") return `To narrow down ${state.issueDetails.at(-1) ?? "the pool water issue"}, do you know either your chlorine or pH result?`;
-      return `Got it — you're troubleshooting ${state.issueDetails.at(-1) ?? "your pool water"} in your pool. Have you tested your chlorine and pH yet?`;
+      return troubleshootingIntro(state);
     }
     if (state.waterType === "drinking" || state.waterType === "well") {
       return "Are you looking for a general screen, or checking a specific concern?";
@@ -432,10 +480,11 @@ export function questionForMissingField(field, state) {
     if (state.parameters.includes("ph") && state.testingScope === "specific-pending") return SCOPE_CLARIFICATION;
     if (state.parameters.includes("ph")) return "Got it — you want to check pH. Would you also like to check chlorine?";
     if (state.issues.includes("green")) {
-      return "Got it. Green pool water can point us toward a different set of tests. What would you like to check?";
+      const indicates = issueIndicates(state.waterType, "green_water");
+      return `Got it. Green pool water${indicates ? ` often points to ${indicates}` : " can point us toward a different set of tests"}. What would you like to check?`;
     }
     if (state.issues.includes("cloudy")) {
-      return "Got it — cloudy pool water can have a few causes. What are you trying to check?";
+      return cloudyIntro(state);
     }
     return "What would you like to check?";
   }
@@ -543,7 +592,7 @@ export function guidedResponse(state, readiness, latestUserMessage = "") {
   let reply = state.pendingWaterTypeSwitch
     ? clarifyWaterTypeSwitch(state)
     : questionForMissingField(field, state);
-  const uncertain = /^\s*(?:no|not sure|unsure|maybe|i don't know)\s*[.!]?\s*$/i.test(latestUserMessage);
+  const uncertain = /^\s*(?:no|not sure|unsure|maybe|no idea|i don't know)\s*[.!]?\s*$/i.test(latestUserMessage);
   if (field === "waterType" && state.lastAskedField === "waterType" && !detectContext(latestUserMessage)) {
     reply = state.waterTypeClarificationCount <= 1
       ? "No problem — we can narrow it down another way. Where is the water from?"
@@ -561,12 +610,17 @@ export function guidedResponse(state, readiness, latestUserMessage = "") {
     reply = "No problem — we can still narrow down the useful tests. What would you like to check?";
   }
   if (reply && reply === state._lastAssistantReply) {
-    if (field === "goal") reply = "What best describes your pool test: routine checks or a water problem?";
-    else if (field === "testingScope" && state.goal === "troubleshooting") {
+    const isPool = ["pool", "spa"].includes(state.waterType);
+    if (field === "goal") reply = "What best describes what you're testing: routine checks or a specific problem?";
+    else if (field === "testingScope" && state.goal === "troubleshooting" && isPool) {
       const issue = state.issueDetails.at(-1) ?? "the pool water issue";
       reply = state.parameters.length
         ? `Would you like a full test to investigate ${issue}, or do you know another result?`
         : `Would it help to tell me your chlorine or pH result, or should we plan a full test for ${issue}?`;
+    } else if (field === "testingScope" && state.goal === "troubleshooting") {
+      reply = state.parameters.length
+        ? "Would a full test suit you better, or do you already have another result to go on?"
+        : "Would it help to share any result you already have, or should we plan a general test instead?";
     } else if (field === "waterType") reply = "Which setting is closest to the water you want to test?";
     else reply = "What would you like to share next so I can narrow down the right test?";
   }
@@ -616,11 +670,13 @@ function determineRecommendationReadiness(messages, needs, conversation, state) 
   const missing = [];
   if (!state.waterType) missing.push("water_type");
   if (state.pendingWaterTypeSwitch) missing.push("water_type_confirmation");
-  if (!state.goal) missing.push("goal");
-  if (state.waterType === "aquarium" && !state.waterSubtype) missing.push("aquarium_type");
-  if ((state.waterType === "drinking" || state.waterType === "well") && !state.waterSource) missing.push("water_source");
-  if (["pool", "spa", "drinking", "well"].includes(state.waterType) &&
-    (!state.testingScope || ["specific-pending", "not-tested"].includes(state.testingScope))) missing.push("testing_scope");
+  if (!state.relaxedReadiness) {
+    if (!state.goal) missing.push("goal");
+    if (state.waterType === "aquarium" && !state.waterSubtype) missing.push("aquarium_type");
+    if ((state.waterType === "drinking" || state.waterType === "well") && !state.waterSource) missing.push("water_source");
+    if (["pool", "spa", "drinking", "well"].includes(state.waterType) &&
+      (!state.testingScope || ["specific-pending", "not-tested"].includes(state.testingScope))) missing.push("testing_scope");
+  }
 
   const question = state.pendingWaterTypeSwitch
     ? clarifyWaterTypeSwitch(state)
@@ -641,6 +697,7 @@ function determineRecommendationReadiness(messages, needs, conversation, state) 
     testingScopeKnown: Boolean(state.testingScope && !["specific-pending", "not-tested"].includes(state.testingScope)),
     relevantParameters: needs.parameters,
     existingTestInformation: needs.hasValues,
+    relaxedReadiness: state.relaxedReadiness,
     missing,
     question,
   };

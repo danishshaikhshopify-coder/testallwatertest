@@ -10,28 +10,19 @@ import {
 } from "./_needs.js";
 import { findProducts } from "./_catalog.js";
 import { guardReply } from "./_guard.js";
+import { knowledgeContext } from "./_knowledge.js";
+import { enrichEvent, logEvent } from "./_telemetry.js";
 
-const DEFAULT_BASE_URL = "https://router.bynara.id/v1";
-// These Free-plan models were confirmed on NaraRouter's live plan and with the
-// complete assistant prompt. Keep the second model as the fallback.
-const DEFAULT_MODELS = ["nemotron-3-super-free", "nemotron-3-ultra-free"];
-const CONFIGURED_MODELS = (process.env.NARA_ROUTER_MODELS || "")
-  .split(",")
-  .map((m) => m.trim())
-  .filter(Boolean);
-const MODELS = [...new Set(CONFIGURED_MODELS.length ? CONFIGURED_MODELS : DEFAULT_MODELS)];
-const MODEL = MODELS[0];
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+const MODEL = "claude-sonnet-5-5";
 
-// The Free-plan models are reasoning models, but this is simple customer-support chat,
-// so thinking is disabled ("none", per NaraRouter's docs): it only adds latency, and
-// every model tested worked with it.
-const REASONING_EFFORT = "none";
-
-// Each attempt (connect + headers + body) gets a hard deadline. A model-specific 404
-// gives the next configured model a longer window; other failures keep the short timeout.
+// Each attempt (connect + headers + body) gets a hard deadline. A retryable failure
+// (timeout, network error, or the service being temporarily overloaded) gets one more
+// attempt with the identical request and a longer deadline. Other failures are not retried.
 const ATTEMPT_TIMEOUT_MS = 9000;
-const MODEL_FALLBACK_TIMEOUT_MS = 20000;
-const MAX_ATTEMPTS = 1;
+const RETRY_TIMEOUT_MS = 20000;
+const MAX_ATTEMPTS = 2;
 const MAX_OUTPUT_TOKENS = 1000;
 const MIN_REPLY_ALNUM = 4; // a reply with fewer letters/digits than this is a truncated glitch
 const MAX_HISTORY_MESSAGES = 12;
@@ -40,11 +31,31 @@ const MAX_MESSAGE_CHARS = 4000;
 // The system prompt lives on the server so clients cannot replace it and use
 // this endpoint as a free general-purpose LLM proxy.
 const SYSTEM_PROMPT = `
-You are TestAllWater's specialist water-testing assistant.
+You are TestAllWater's specialist water-testing assistant — an expert water-testing advisor
+who explains things simply, asks only useful questions, remembers context, and recommends the
+most appropriate TestAllWater product once there is enough information.
 
 Your job is to help customers understand WHAT THEY SHOULD TEST and WHICH TYPE
 OF TEST METHOD is appropriate. You are a water-testing/product-discovery
 assistant, not a generic chatbot.
+
+HOW YOU COME ACROSS:
+You feel like a knowledgeable friend and teacher — not a sales bot, not a generic chatbot, and
+not an interrogation form. Help first, sell second: the customer should learn something useful
+every turn, even one where you're still narrowing things down.
+- Tone: friendly, confident, simple, human, helpful. Not robotic, not overly enthusiastic, not
+  salesy. No unnecessary emojis.
+- Teach while you diagnose: when the customer describes a problem, briefly explain what it can
+  indicate IN THE SAME MESSAGE as your next question — never a bare question on its own, and
+  never a separate "explanation" message followed by a separate "question" message. Use the
+  "WATER TESTING KNOWLEDGE" note (added below when relevant) as your factual basis.
+- Ask only useful questions: before asking anything, check that the answer would materially
+  change what you recommend or how you explain things. Never ask just because a field exists.
+  Different situations need different amounts of information — do not force a fixed number of
+  questions.
+- Keep replies short and conversational: normally one short explanation plus either one question
+  or one recommendation. Avoid long lectures or walls of bullet points; a short list is fine when
+  a few distinct parameters genuinely need naming, but do not over-explain.
 
 CONVERSATION:
 - Let the customer describe the situation naturally. Use structured state and the conversation as the authoritative record.
@@ -69,13 +80,12 @@ cyanuric acid, nitrate, nitrite, ammonia, phosphate, iron, copper,
 dissolved oxygen, salinity/TDS, and multi-parameter testing.
 
 GUIDANCE:
-For pools/spas, consider chlorine or bromine, pH, alkalinity and other
-measurements based on the symptom.
-For drinking/well water, distinguish general screening from a specific concern.
-Do not claim that a consumer test proves water is medically or legally safe.
-For aquariums, consider ammonia, nitrite, nitrate, pH and hardness according
-to the setup.
-Never diagnose human illness.
+A "WATER TESTING KNOWLEDGE" note may be added to these instructions with the facts relevant
+to this conversation (what the customer's issue may indicate, which parameters matter and why).
+Treat it as your factual basis and explain it naturally and simply; never add facts beyond it.
+For drinking water especially: say what a test CAN tell the customer rather than a stronger
+claim — never say or imply that a consumer test proves water is medically or legally safe,
+unless the knowledge/product information actually supports that. Never diagnose human illness.
 
 PRODUCT RULE:
 You can only know about TestAllWater products through a "PRODUCT CONTEXT" note that may be
@@ -121,6 +131,24 @@ function sanitizeHistory(incoming) {
     .slice(-MAX_HISTORY_MESSAGES);
 }
 
+// The Anthropic Messages API requires messages to strictly alternate user/assistant and
+// to start with a user turn. The client-side conversation can have consecutive turns of the
+// same role (e.g. a resend after a failure), so adjacent same-role turns are merged, and any
+// leading assistant turn with no preceding user turn is dropped.
+function toAnthropicMessages(conversation) {
+  const merged = [];
+  for (const m of conversation) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === m.role) {
+      last.content += `\n${m.content}`;
+    } else {
+      merged.push({ role: m.role, content: m.content });
+    }
+  }
+  while (merged.length && merged[0].role !== "user") merged.shift();
+  return merged;
+}
+
 // --- Repeated messages -------------------------------------------------------------
 // If the customer sends the same message again after the AI already answered it, the
 // model is told so, otherwise it tends to re-run the same list, reasoning and question.
@@ -132,6 +160,14 @@ const REPEATED_MESSAGE_NOTE = `IMPORTANT - REPEATED MESSAGE: The customer's late
 - Do NOT ask any question you have already asked, even reworded.
 - Then add something NEW and useful: ONE different, more specific question you have not asked yet, or a concrete next step (for example how to collect a sample, which result to look out for, or which test format suits them). Only if you have not yet given any recommendation, give your best one now from what you know.
 - If the message is a short reply that plausibly answers a newer question than before, just continue normally.`;
+
+// The customer explicitly asked to skip ahead to products, or is frustrated with the
+// questions (see detectShowProductsOverride in _needs.js). Help first, sell second: give the
+// best recommendation from what is already known rather than gathering more.
+const RELAXED_READINESS_NOTE = `IMPORTANT - CUSTOMER ASKED TO SKIP AHEAD: The customer asked to see products directly, or is frustrated with the questions. Do not ask any further clarifying question.
+- Use only the facts already known (see KNOWN FACTS) to explain and recommend.
+- If some detail is still unknown, make the best reasonable recommendation anyway rather than asking for it.
+- Keep it brief and helpful; do not apologise at length for having asked questions.`;
 
 // Compare ignoring case, spacing and surrounding punctuation.
 const normalizeForCompare = (text) =>
@@ -179,12 +215,13 @@ class ChatError extends Error {
 const timeoutError = () =>
   new ChatError("timeout", 504, "The AI took too long to respond. Please try again.");
 
-// Retry stalls, network failures, or a model-specific 404 with the next configured model.
-// Authentication, rate-limit, and unrelated request errors are returned without retrying.
+// Retry stalls, network failures, or the service being temporarily overloaded, with the
+// identical request. Authentication, rate-limit, and unrelated request errors are returned
+// without retrying.
 const isRetryable = (error) =>
   error.code === "timeout" ||
   error.code === "unreachable" ||
-  error.code === "model_unavailable" ||
+  error.code === "overloaded" ||
   error.retryable;
 
 function toChatError(error, meta) {
@@ -202,10 +239,10 @@ function upstreamMessage(data) {
   return (typeof found === "string" ? found : JSON.stringify(found)).slice(0, 300);
 }
 
-// Some models, including the previously configured nex-n2.5-pro, answer with a JSON
-// object instead of prose, and the key varies: {"message": ...},
-// {"response": ...}, {"answer": ...}, {"assistant_response": ...}, {"assistantMessage": ...},
-// or a structured object like {"water_type": ..., "parameters": [...], "test_format": ...}.
+// Some models answer with a JSON object instead of prose, and the key varies:
+// {"message": ...}, {"response": ...}, {"answer": ...}, {"assistant_response": ...},
+// {"assistantMessage": ...}, or a structured object like {"water_type": ..., "parameters":
+// [...], "test_format": ...}.
 // Customers must never see raw JSON, so:
 //   1. an object with a prose field   -> show just that text
 //   2. a flat object of plain values  -> show it as a readable bullet list
@@ -289,16 +326,7 @@ function unwrapJsonReply(reply) {
   return { text: null, unwrapped: "unrenderable" };
 }
 
-// One JSON log line per request for Vercel Runtime Logs. Never includes the API
-// key or any message text; only sizes, timings and outcomes.
-function logRequest(meta) {
-  const { startedAt, ...fields } = meta;
-  const line = JSON.stringify({ event: "chat", ...fields, totalMs: Date.now() - startedAt });
-  if (meta.outcome === "ok") console.log(line);
-  else console.error(line);
-}
-
-async function attemptOnce({ baseUrl, apiKey, model, messages, meta, timeoutMs }) {
+async function attemptOnce({ apiKey, system, messages, meta, timeoutMs }) {
   const attemptStartedAt = Date.now();
   const controller = new AbortController();
   let timer;
@@ -312,19 +340,19 @@ async function attemptOnce({ baseUrl, apiKey, model, messages, meta, timeoutMs }
   });
 
   const exchange = (async () => {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await fetch(ANTHROPIC_API_URL, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        "x-api-key": apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
         "Content-Type": "application/json",
         Accept: "application/json",
       },
       body: JSON.stringify({
-        model,
+        model: MODEL,
+        system,
         messages,
-        temperature: 0.35,
         max_tokens: MAX_OUTPUT_TOKENS,
-        reasoning_effort: REASONING_EFFORT,
       }),
       signal: controller.signal,
     });
@@ -348,7 +376,7 @@ async function attemptOnce({ baseUrl, apiKey, model, messages, meta, timeoutMs }
       // errorDetail keeps the raw body when there is no structured message, so logs
       // and the JSON "detail" field always show why the upstream failed.
       meta.errorDetail = message || raw.slice(0, 300) || "(empty response body)";
-      meta.upstreamRequestId = data?.error?.request_id || response.headers.get("x-request-id");
+      meta.upstreamRequestId = data?.request_id || response.headers.get("request-id");
       if (response.status === 429) {
         throw new ChatError(
           "rate_limited",
@@ -356,8 +384,13 @@ async function attemptOnce({ baseUrl, apiKey, model, messages, meta, timeoutMs }
           "The AI service is busy right now. Please try again in a moment."
         );
       }
-      if (response.status === 404 && /\bmodel\b/i.test(message)) {
-        throw new ChatError("model_unavailable", 502, "The selected AI model is unavailable.");
+      if (response.status === 529) {
+        throw new ChatError(
+          "overloaded",
+          503,
+          "The AI service is temporarily overloaded. Please try again in a moment.",
+          true
+        );
       }
       throw new ChatError(
         "upstream_error",
@@ -370,19 +403,16 @@ async function attemptOnce({ baseUrl, apiKey, model, messages, meta, timeoutMs }
       throw new ChatError("bad_response", 502, "The AI service returned an unreadable response.");
     }
 
-    const choice = data.choices?.[0];
-    meta.finishReason = choice?.finish_reason;
-    meta.promptTokens = data.usage?.prompt_tokens;
-    meta.completionTokens = data.usage?.completion_tokens;
-    meta.reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens;
-    meta.hadReasoning = Boolean(choice?.message?.reasoning_content || choice?.message?.reasoning);
+    meta.finishReason = data.stop_reason;
+    meta.promptTokens = data.usage?.input_tokens;
+    meta.completionTokens = data.usage?.output_tokens;
 
-    const reply = choice?.message?.content?.trim();
+    const reply = data.content?.find((block) => block?.type === "text")?.text?.trim();
     if (!reply) {
       throw new ChatError(
         "empty_reply",
         502,
-        choice?.finish_reason === "length"
+        data.stop_reason === "max_tokens"
           ? "The AI ran out of tokens before answering. Please try again."
           : "The AI returned an empty answer. Please try again.",
         true
@@ -410,13 +440,13 @@ async function attemptOnce({ baseUrl, apiKey, model, messages, meta, timeoutMs }
   }
 }
 
-// Up to MAX_ATTEMPTS identical requests; the first success is returned immediately.
-async function callModel({ baseUrl, apiKey, messages, meta }) {
+// Up to MAX_ATTEMPTS identical requests to the one configured model; the first success is
+// returned immediately.
+async function callModel({ apiKey, system, messages, meta }) {
   meta.attempts = [];
   let lastError;
 
-  for (const model of MODELS) {
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     // Per-attempt fields describe the attempt that decided the outcome.
     delete meta.upstreamStatus;
     delete meta.headersMs;
@@ -425,17 +455,16 @@ async function callModel({ baseUrl, apiKey, messages, meta }) {
     delete meta.degenerateReply;
 
     const startedAt = Date.now();
-    const timeoutMs = lastError && model !== MODELS[0] ? MODEL_FALLBACK_TIMEOUT_MS : ATTEMPT_TIMEOUT_MS;
+    const timeoutMs = attempt === 1 ? ATTEMPT_TIMEOUT_MS : RETRY_TIMEOUT_MS;
     try {
-      const reply = await attemptOnce({ baseUrl, apiKey, model, messages, meta, timeoutMs });
-      meta.attempts.push({ model, attempt, timeoutMs, outcome: "ok", ms: Date.now() - startedAt });
-      return { reply, model };
+      const reply = await attemptOnce({ apiKey, system, messages, meta, timeoutMs });
+      meta.attempts.push({ attempt, timeoutMs, outcome: "ok", ms: Date.now() - startedAt });
+      return { reply };
     } catch (error) {
-      meta.attempts.push({ model, attempt, timeoutMs, outcome: error.code, ms: Date.now() - startedAt });
+      meta.attempts.push({ attempt, timeoutMs, outcome: error.code, ms: Date.now() - startedAt });
       lastError = error;
-      if (!isRetryable(error)) return Promise.reject(lastError);
+      if (!isRetryable(error)) throw lastError;
     }
-  }
   }
 
   if (lastError.code === "timeout") {
@@ -468,8 +497,17 @@ function productContext(needs, catalog) {
   const topics = parameterLabels(needs.parameters).join(", ");
   if (catalog.status === "ok") {
     const n = catalog.products.length;
+    const [primary, ...extra] = catalog.products;
     const covers = [...new Set(catalog.products.flatMap((p) => p.covers))].join(", ");
-    return `PRODUCT CONTEXT: The app is showing ${n} real TestAllWater product${n === 1 ? "" : "s"} as product cards under your reply, listed for: ${covers}. Tests relevant to this conversation: ${topics}. Say the options are shown below and explain in plain words which of these tests matter and why. Do not name, price or link any product yourself.`;
+    let note = `PRODUCT CONTEXT: The app is showing ${n} real TestAllWater product${n === 1 ? "" : "s"} as product cards under your reply, listed for: ${covers}. Tests relevant to this conversation: ${topics}.`;
+    note += ` Recommend clearly: the first one (covering ${primary.covers.join(", ")}) is the best fit for what the customer described. Connect their problem to why these parameters matter, then present it as your main recommendation. Call it "the option below" (or "the first option" if more than one is shown) — never name, price or link it yourself.`;
+    if (extra.length) {
+      const extraCovers = [...new Set(extra.flatMap((p) => p.covers))].join(", ");
+      note += ` ${extra.length === 1 ? "One additional option is" : `${extra.length} additional options are`} also shown, covering: ${extraCovers}. Mention ${extra.length === 1 ? "it" : "them"} only as optional — soft language like "if you want to go a little further..." — and only when genuinely useful here, never as a requirement and never just to add more products.`;
+    } else {
+      note += " There is nothing else to add beyond this one unless the customer asks for more.";
+    }
+    return note;
   }
   if (catalog.status === "no_match") {
     return `PRODUCT CONTEXT: The TestAllWater catalog has NO product matching: ${noMatchTopic(needs)}. Say clearly that no matching product was found in the TestAllWater catalog. Do not name, suggest or invent any product, price or link. You can still explain which tests are relevant.`;
@@ -503,20 +541,50 @@ function finalizeReply(reply, needs, catalog, meta) {
   return text;
 }
 
+// The Shopify Custom Section calls this endpoint from the storefront's own origin (a
+// different domain from where this function is deployed), so the browser needs an explicit
+// CORS allow before it will let that cross-origin fetch through at all. This endpoint takes
+// no cookies/credentials and holds no secrets reachable from the response, so a permissive
+// default is a reasonable, well-documented choice (see README "Shopify Custom Section");
+// CORS_ALLOWED_ORIGINS lets it be tightened to the real storefront domain(s) in production.
+function applyCors(req, res) {
+  // Read fresh each call (not cached at module load) so it reflects the environment at
+  // request time, same as every other env-driven setting in this handler.
+  const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || "*")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+  const origin = req.headers?.origin;
+  if (allowedOrigins.includes("*")) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
 export default async function handler(req, res) {
+  const startedAt = Date.now();
+  applyCors(req, res);
+  // The browser's CORS preflight for a cross-origin POST with a JSON body; nothing to answer
+  // beyond the allow headers above.
+  if (req.method === "OPTIONS") {
+    return res.status(200).json({});
+  }
   res.setHeader("Cache-Control", "no-store");
 
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
+    res.setHeader("Allow", "POST, OPTIONS");
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const apiKey = process.env.NARA_ROUTER_API_KEY;
-  const baseUrl = (process.env.NARA_ROUTER_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
+  const apiKey = process.env.ANTHROPIC_API_KEY;
 
   if (!apiKey) {
-    console.error(JSON.stringify({ event: "chat_config_error", problem: "NARA_ROUTER_API_KEY is not set" }));
-    return res.status(500).json({ error: "NARA_ROUTER_API_KEY is not configured in Vercel." });
+    console.error(JSON.stringify({ event: "chat_config_error", problem: "ANTHROPIC_API_KEY is not set" }));
+    return res.status(500).json({ error: "ANTHROPIC_API_KEY is not configured in Vercel." });
   }
 
   const history = sanitizeHistory(parseBody(req).messages);
@@ -529,15 +597,39 @@ export default async function handler(req, res) {
   const repeated = isAnsweredRepeat(conversation);
 
   const userMessages = conversation.filter((m) => m.role === "user").map((m) => m.content);
-  const state = deriveConversationState(conversation, parseBody(req).state);
+  const incomingState = parseBody(req).state;
+  const state = deriveConversationState(conversation, incomingState);
   const needs = analyzeNeeds(userMessages, state);
   const readiness = assessRecommendationReadiness(userMessages, needs, conversation, state);
 
-  if (!readiness.ready && (needs.wantsProducts || state.waterType || state.pendingWaterTypeSwitch)) {
+  const requestId = req.headers?.["x-vercel-id"] || randomUUID();
+  // A stable id for the whole conversation, round-tripped the same way `state` already is
+  // (the frontend passes it back opaquely): generated once, then carried on every turn. Used
+  // only to group this conversation's log events for later review — never sent to Anthropic
+  // or Shopify, and never shown to the customer.
+  state.conversationId = typeof incomingState?.conversationId === "string" && incomingState.conversationId
+    ? incomingState.conversationId
+    : randomUUID();
+
+  if (!readiness.ready && (needs.wantsProducts || state.waterType || state.pendingWaterTypeSwitch || state.relaxedReadiness)) {
     const guided = guidedResponse(state, readiness, userMessages.at(-1) ?? "");
     state.lastAskedField = guided.field;
     state.lastAskedOptions = guided.options;
     state._lastAssistantReply = guided.reply;
+    const meta = {
+      requestId,
+      model: "readiness-gate",
+      historyMessages: conversation.length,
+      startedAt,
+      readiness: { ready: readiness.ready, missing: readiness.missing },
+      outcome: "ok",
+      replyChars: guided.reply.length,
+      needs: { context: needs.context, parameters: needs.parameters },
+    };
+    if (repeated) meta.repeatedMessage = true;
+    if (state.relaxedReadiness) meta.relaxedReadiness = true;
+    if (conversation.length !== history.length) meta.droppedUnansweredRepeats = history.length - conversation.length;
+    logEvent(enrichEvent(meta, state));
     return res.status(200).json({
       reply: guided.reply,
       options: guided.options,
@@ -553,28 +645,29 @@ export default async function handler(req, res) {
     ? { status: "skipped", products: [], meta: {} }
     : await findProducts(needs);
 
-  // The notes go into the single system message (some models mishandle several).
+  // The notes go into the single system prompt (the Anthropic API takes it as a separate
+  // top-level field, not as a message in the conversation).
   const system = [
     SYSTEM_PROMPT,
     `KNOWN FACTS:\n- Water type: ${state.waterType || "not known"}\n- Water subtype: ${state.waterSubtype || "not known"}\n- Water source: ${state.drinkingSource || state.waterSource || "not known"}\n- Treatment: ${state.treatment || "not applicable or not known"}\n- Issue: ${state.issue || "none"}\n- Issue details: ${state.issueDetails?.length ? state.issueDetails.join(", ") : "none"}\n- Issues reported: ${state.issues?.length ? state.issues.join(", ") : "none"}\n- Testing scope: ${state.testingScope || "not known"}\n- Parameters: ${needs.parameters.length ? parameterLabels(needs.parameters).join(", ") : "not known"}\n- Goal: ${state.goal || "not known"}\nDO NOT ASK FOR THESE AGAIN. This structured state is authoritative; do not reset context for short answers. The deterministic next missing field is "${getNextMissingField(state)}". If it is not "ready", ask about ONLY that field and do not ask about any known field. Use any structured quick-reply options returned by the backend. If it is "ready", answer using the known facts without restarting clarification.`,
     readiness.ready ? "RECOMMENDATION STATUS: READY. The required context has been gathered. Do not ask for information already provided; give a recommendation based on the gathered details." : "",
     repeated ? REPEATED_MESSAGE_NOTE : "",
+    state.relaxedReadiness ? RELAXED_READINESS_NOTE : "",
+    knowledgeContext(state, needs),
     productContext(needs, catalog),
   ]
     .filter(Boolean)
     .join("\n\n");
-  const messages = [{ role: "system", content: system }, ...conversation];
-  const requestId = req.headers?.["x-vercel-id"] || randomUUID();
+  const messages = toAnthropicMessages(conversation);
   const meta = {
     requestId,
-    models: MODELS,
     model: MODEL,
-    reasoningEffort: REASONING_EFFORT,
     historyMessages: conversation.length,
-    startedAt: Date.now(),
+    startedAt,
     readiness: { ready: readiness.ready, missing: readiness.missing },
   };
   if (repeated) meta.repeatedMessage = true;
+  if (state.relaxedReadiness) meta.relaxedReadiness = true;
   if (conversation.length !== history.length) meta.droppedUnansweredRepeats = history.length - conversation.length;
   if (catalog.status !== "skipped") {
     meta.catalog = { status: catalog.status, shown: catalog.products.length, ...catalog.meta };
@@ -582,7 +675,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const result = await callModel({ baseUrl, apiKey, messages, meta });
+    const result = await callModel({ apiKey, system, messages, meta });
     const constrainedReply = constrainQuestionToState(result.reply, readiness);
     if (constrainedReply !== result.reply) meta.rejectedKnownFieldQuestion = true;
     let reply = finalizeReply(constrainedReply, needs, catalog, meta);
@@ -600,16 +693,15 @@ export default async function handler(req, res) {
       }
     }
     state._lastAssistantReply = reply;
-    meta.model = result.model;
     meta.outcome = "ok";
     meta.replyChars = reply.length;
-    logRequest(meta);
-    const body = { reply, options, model: result.model, readiness, state, ready: readiness.ready };
+    logEvent(enrichEvent(meta, state));
+    const body = { reply, options, model: MODEL, readiness, state, ready: readiness.ready };
     if (catalog.products.length) body.products = catalog.products;
     return res.status(200).json(body);
   } catch (error) {
     meta.outcome = error.code;
-    logRequest(meta);
+    logEvent(enrichEvent(meta, state));
     return res
       .status(error.status)
       .json({ error: error.message, code: error.code, requestId, detail: meta.errorDetail });

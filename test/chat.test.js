@@ -20,9 +20,9 @@ function mockUpstream(...responses) {
   };
 }
 
-const ok = (content) => ({ body: { choices: [{ message: { content } }] } });
+const ok = (content) => ({ body: { content: [{ type: "text", text: content }], stop_reason: "end_turn" } });
 
-function call({ method = "POST", body } = {}) {
+function call({ method = "POST", body, headers = {} } = {}) {
   const res = {
     headers: {},
     setHeader(k, v) {
@@ -37,14 +37,13 @@ function call({ method = "POST", body } = {}) {
       return this;
     },
   };
-  return handler({ method, body }, res).then(() => res);
+  return handler({ method, body, headers }, res).then(() => res);
 }
 
 let logs;
 
 beforeEach(() => {
-  process.env.NARA_ROUTER_API_KEY = "test-key";
-  process.env.NARA_ROUTER_BASE_URL = "https://router.example/v1/";
+  process.env.ANTHROPIC_API_KEY = "test-key";
   process.env.SHOPIFY_CATALOG = "off";
   logs = { out: [], err: [] };
   mock.method(console, "log", (line) => logs.out.push(line));
@@ -125,8 +124,63 @@ test("rejects non-POST requests", async () => {
   assert.equal(res.statusCode, 405);
 });
 
+// Regression: the live Shopify storefront reported POST /api/chat returning 405 Method Not
+// Allowed (Vercel Request Logs). Root cause was that the deployed function was stale — the
+// repo's commits had never been pushed, so Vercel was still serving the pre-migration
+// handler. This pins the exact scenario that must now succeed: a real POST, with a JSON body
+// and an Origin header matching a real cross-origin caller (as the Shopify section sends),
+// reaching the handler and getting a genuine 200 — never a 405 for a request whose method
+// really is POST.
+test("regression: a real cross-origin POST with a JSON body is accepted, not 405'd", async () => {
+  mockUpstream(ok("Sure, happy to help."));
+  const res = await call({
+    method: "POST",
+    headers: { origin: "https://testallwater.co.uk", "content-type": "application/json" },
+    body: { messages: [{ role: "user", content: "hello" }] },
+  });
+  assert.notEqual(res.statusCode, 405, "a genuine POST must never be rejected as method-not-allowed");
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload.reply, "Sure, happy to help.");
+});
+
+// Phase 6: the Shopify Custom Section calls this endpoint from the storefront's own origin,
+// a different domain, so the browser needs CORS allow-headers before it lets that through.
+test("answers a CORS preflight (OPTIONS) request with the right allow headers, no body needed", async () => {
+  const res = await call({ method: "OPTIONS" });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.headers["Access-Control-Allow-Origin"], "*");
+  assert.equal(res.headers["Access-Control-Allow-Methods"], "POST, OPTIONS");
+  assert.equal(res.headers["Access-Control-Allow-Headers"], "Content-Type");
+});
+
+test("every response (success, gate, and error) carries the CORS allow-origin header", async () => {
+  mockUpstream(ok("Sure, happy to help."));
+  const ok1 = await call({ body: { messages: [{ role: "user", content: "hi" }] } });
+  assert.equal(ok1.headers["Access-Control-Allow-Origin"], "*");
+
+  const gate = await call({ body: { messages: [{ role: "user", content: "My pool water is cloudy" }] } });
+  assert.equal(gate.headers["Access-Control-Allow-Origin"], "*");
+
+  delete process.env.ANTHROPIC_API_KEY;
+  const errRes = await call({ body: { messages: [{ role: "user", content: "hi" }] } });
+  assert.equal(errRes.headers["Access-Control-Allow-Origin"], "*");
+});
+
+test("CORS_ALLOWED_ORIGINS, when set, only reflects a listed origin and never leaks others", async () => {
+  process.env.CORS_ALLOWED_ORIGINS = "https://testallwater.co.uk,https://admin.shopify.com";
+  try {
+    const allowed = await call({ method: "OPTIONS", headers: { origin: "https://testallwater.co.uk" } });
+    assert.equal(allowed.headers["Access-Control-Allow-Origin"], "https://testallwater.co.uk");
+
+    const other = await call({ method: "OPTIONS", headers: { origin: "https://evil.example" } });
+    assert.equal(other.headers["Access-Control-Allow-Origin"], undefined);
+  } finally {
+    delete process.env.CORS_ALLOWED_ORIGINS;
+  }
+});
+
 test("returns 500 when the API key is not configured", async () => {
-  delete process.env.NARA_ROUTER_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
   const res = await call({ body: { messages: [{ role: "user", content: "hi" }] } });
   assert.equal(res.statusCode, 500);
 });
@@ -234,7 +288,7 @@ for (const [answer, treatment] of [
     assert.match(next.payload.reply, new RegExp(`${treatment} noted|What would you like to check`, "i"));
     assert.equal(next.payload.products, undefined);
     assert.ok(next.payload.options.length > 0);
-    assert.equal(upstreamCalls.length, 0, "neither NaraRouter nor Shopify runs before readiness");
+    assert.equal(upstreamCalls.length, 0, "neither Claude nor Shopify runs before readiness");
   });
 }
 
@@ -597,7 +651,7 @@ test("model question about a known pool treatment is rejected and replaced", asy
   assert.equal(response.payload.readiness.ready, true);
   assert.equal(response.payload.state.treatment, "bromine");
   assert.doesNotMatch(response.payload.reply, /chlorine-treated, saltwater, or treated with bromine/i);
-  assert.match(upstreamCalls[0].body.messages[0].content, /KNOWN FACTS:[\s\S]*Water type: pool[\s\S]*Treatment: bromine[\s\S]*DO NOT ASK FOR THESE AGAIN/);
+  assert.match(upstreamCalls[0].body.system, /KNOWN FACTS:[\s\S]*Water type: pool[\s\S]*Treatment: bromine[\s\S]*DO NOT ASK FOR THESE AGAIN/);
 });
 
 test("treatment answers normalize equivalent wording", async () => {
@@ -808,6 +862,82 @@ test("aquarium readiness asks only for freshwater or saltwater when its concern 
   assert.equal(answered.payload.readiness.aquariumType, "freshwater");
 });
 
+// --- Phase 2: explicit "show me products" / frustration override --------------------------
+
+test('an explicit "just show me products" is honoured once the water type is known, without asking goal/scope', async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("Here's what covers cloudy pool water.") });
+
+  const conversation = [];
+  let response = await sendTurn(conversation, "My pool water is cloudy");
+  assert.equal(response.payload.ready, false);
+
+  response = await sendTurn(conversation, "just show me products", response.payload.state);
+  assert.equal(response.payload.ready, true);
+  assert.equal(response.payload.state.relaxedReadiness, true);
+  assert.deepEqual(response.payload.readiness.missing, []);
+  assert.ok(response.payload.products?.length, "products are returned from what is already known");
+  assert.ok(store.calls.some((entry) => entry.path === "/search/suggest.json"));
+});
+
+test("a frustrated customer who says to stop asking questions gets products from what is already known", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("These cover what you told me so far.") });
+
+  const conversation = [];
+  let response = await sendTurn(conversation, "My aquarium fish are gasping at the surface");
+  assert.equal(response.payload.ready, false, "aquarium subtype is still unknown");
+
+  response = await sendTurn(conversation, "I don't want to answer any more questions, just help me", response.payload.state);
+  assert.equal(response.payload.ready, true);
+  assert.equal(response.payload.state.relaxedReadiness, true);
+  assert.ok(response.payload.products?.length);
+});
+
+test('"just show me products" with no water type yet still asks the one unavoidable question', async () => {
+  const response = await call({ body: { messages: [{ role: "user", content: "just show me products" }] } });
+  assert.equal(response.payload.ready, false);
+  assert.equal(response.payload.state.relaxedReadiness, true);
+  assert.equal(response.payload.readiness.nextMissingField, "waterType");
+  assert.match(response.payload.reply, /what kind of water/i);
+  assert.equal(response.payload.products, undefined);
+});
+
+test('once relaxed, "just show me products" stays relaxed for the rest of the conversation', async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("Options for your pool below.") });
+
+  const conversation = [];
+  let response = await sendTurn(conversation, "just show me products");
+  response = await sendTurn(conversation, "pool", response.payload.state);
+  assert.equal(response.payload.state.relaxedReadiness, true);
+  assert.equal(response.payload.ready, true);
+  assert.ok(response.payload.products?.length);
+});
+
+test("the relaxed-readiness override never loses previously collected context", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("Bromine pool options below.") });
+
+  const conversation = [];
+  let response = await sendTurn(conversation, "My pool water is cloudy");
+  response = await sendTurn(conversation, "bromine", response.payload.state);
+  assert.equal(response.payload.state.treatment, "bromine");
+
+  response = await sendTurn(conversation, "just show me products", response.payload.state);
+  assert.equal(response.payload.state.waterType, "pool");
+  assert.equal(response.payload.state.treatment, "bromine", "earlier answers are not lost when the customer asks to skip ahead");
+  assert.ok(response.payload.state.issues.includes("cloudy"));
+});
+
 test("repeating the same unanswered pool message does not ask the identical question again", async () => {
   const initial = { role: "user", content: "My pool water is cloudy." };
   const first = await call({ body: { messages: [initial] } });
@@ -820,19 +950,21 @@ test("repeating the same unanswered pool message does not ask the identical ques
   assert.equal(repeated.payload.products, undefined);
 });
 
-test("forwards the real upstream reply, server-side key, and trimmed base URL", async () => {
+test("forwards the real upstream reply with the server-side key, to the Anthropic Messages API", async () => {
   mockUpstream(ok("  Real AI answer  "));
   const res = await call(HI);
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.payload.reply, "Real AI answer");
-  assert.equal(res.payload.model, "nemotron-3-super-free");
+  assert.equal(res.payload.model, "claude-sonnet-5-5");
   assert.equal(upstreamCalls.length, 1);
-  assert.equal(upstreamCalls[0].url, "https://router.example/v1/chat/completions");
-  assert.equal(upstreamCalls[0].init.headers.Authorization, "Bearer test-key");
+  assert.equal(upstreamCalls[0].url, "https://api.anthropic.com/v1/messages");
+  assert.equal(upstreamCalls[0].init.headers["x-api-key"], "test-key");
+  assert.equal(upstreamCalls[0].init.headers["anthropic-version"], "2023-06-01");
+  assert.equal(upstreamCalls[0].body.model, "claude-sonnet-5-5");
 });
 
-test("sends full conversation history, in order, after the server system prompt", async () => {
+test("sends the system prompt separately and the full conversation history, in order", async () => {
   mockUpstream(ok("Sure, happy to help."));
   const history = [
     { role: "user", content: "I am curious about water testing" },
@@ -841,10 +973,8 @@ test("sends full conversation history, in order, after the server system prompt"
   ];
   await call({ body: { messages: history } });
 
-  const sent = upstreamCalls[0].body.messages;
-  assert.equal(sent[0].role, "system");
-  assert.match(sent[0].content, /TestAllWater/);
-  assert.deepEqual(sent.slice(1), history);
+  assert.match(upstreamCalls[0].body.system, /TestAllWater/);
+  assert.deepEqual(upstreamCalls[0].body.messages, history);
 });
 
 test("drops client-supplied system messages", async () => {
@@ -859,8 +989,9 @@ test("drops client-supplied system messages", async () => {
   });
 
   const sent = upstreamCalls[0].body.messages;
-  assert.equal(sent.filter((m) => m.role === "system").length, 1);
-  assert.doesNotMatch(JSON.stringify(sent), /general chatbot/);
+  assert.equal(sent.filter((m) => m.role === "system").length, 0);
+  assert.deepEqual(sent, [{ role: "user", content: "hello" }]);
+  assert.doesNotMatch(JSON.stringify(upstreamCalls[0].body), /general chatbot/);
 });
 
 test("caps history length and per-message size", async () => {
@@ -873,7 +1004,10 @@ test("caps history length and per-message size", async () => {
   await call({ body: { messages } });
 
   const sent = upstreamCalls[0].body.messages;
-  assert.equal(sent.length, 1 + 12);
+  // Anthropic requires the conversation to start on a user turn; a history window that
+  // would start on an assistant turn is trimmed back to the next user turn.
+  assert.equal(sent[0].role, "user");
+  assert.equal(sent.length, 11);
   assert.equal(sent.at(-1).content.length, 4000);
 });
 
@@ -883,12 +1017,13 @@ test("accepts a JSON string body", async () => {
   assert.equal(res.statusCode, 200);
 });
 
-test("does not retry a non-model upstream error on another model", async () => {
+test("does not retry a non-retryable upstream error", async () => {
   mockUpstream({ status: 500, body: { error: { message: "boom" } } }, ok("must never be reached"));
   const res = await call({ body: { messages: [{ role: "user", content: "hi" }] } });
 
   assert.equal(res.statusCode, 502);
-  assert.deepEqual(upstreamCalls.map((c) => c.body.model), ["nemotron-3-super-free"]);
+  assert.equal(upstreamCalls.length, 1);
+  assert.deepEqual(upstreamCalls.map((c) => c.body.model), ["claude-sonnet-5-5"]);
 });
 
 const HI = { body: { messages: [{ role: "user", content: "hi" }] } };
@@ -907,8 +1042,8 @@ test("returns a JSON error with the upstream message and no canned reply when th
   assert.equal(res.payload.code, "unreachable");
 
   mockSequence(
-    { body: { choices: [{ message: { content: "" }, finish_reason: "stop" }] } },
-    { body: { choices: [{ message: { content: "" }, finish_reason: "stop" }] } }
+    { body: { content: [{ type: "text", text: "" }], stop_reason: "end_turn" } },
+    { body: { content: [{ type: "text", text: "" }], stop_reason: "end_turn" } }
   );
   res = await call(HI);
   assert.equal(res.statusCode, 502);
@@ -916,37 +1051,17 @@ test("returns a JSON error with the upstream message and no canned reply when th
   assert.equal(upstreamCalls.length, 2);
 });
 
-test("a model-specific 404 falls back to the next configured model", async () => {
+test("an empty reply is retried once with the same model", async () => {
   mockSequence(
-    { status: 404, body: { error: { message: "model not found" } } },
-    ok("fallback model reply")
+    { body: { content: [{ type: "text", text: "" }], stop_reason: "end_turn" } },
+    ok("the retry produced an answer")
   );
   const res = await call(HI);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.payload.reply, "fallback model reply");
-  assert.equal(res.payload.model, "nemotron-3-ultra-free");
-  assert.deepEqual(upstreamCalls.map((call) => call.body.model), [
-    "nemotron-3-super-free",
-    "nemotron-3-ultra-free",
-  ]);
-  assert.deepEqual(JSON.parse(logs.out[0]).attempts.map((attempt) => attempt.outcome), [
-    "model_unavailable",
-    "ok",
-  ]);
-  assert.deepEqual(JSON.parse(logs.out[0]).attempts.map((attempt) => attempt.timeoutMs), [9000, 20000]);
-});
-
-test("an empty model reply falls back once, but degenerate text is not retried", async () => {
-  mockSequence(
-    { body: { choices: [{ message: { content: "" }, finish_reason: "stop" }] } },
-    ok("the fallback produced an answer")
-  );
-  const res = await call(HI);
-
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.payload.reply, "the fallback produced an answer");
-  assert.equal(res.payload.model, "nemotron-3-ultra-free");
+  assert.equal(res.payload.reply, "the retry produced an answer");
+  assert.equal(res.payload.model, "claude-sonnet-5-5");
+  assert.deepEqual(upstreamCalls.map((c) => c.body.model), ["claude-sonnet-5-5", "claude-sonnet-5-5"]);
   assert.deepEqual(JSON.parse(logs.out[0]).attempts.map((attempt) => attempt.outcome), [
     "empty_reply",
     "ok",
@@ -986,8 +1101,8 @@ test("surfaces the cause of an upstream failure whatever shape the error body ha
 
 test("explains an empty reply caused by the token limit", async () => {
   mockSequence(
-    { body: { choices: [{ message: { content: null }, finish_reason: "length" }] } },
-    { body: { choices: [{ message: { content: null }, finish_reason: "length" }] } }
+    { body: { content: [], stop_reason: "max_tokens" } },
+    { body: { content: [], stop_reason: "max_tokens" } }
   );
   const res = await call(HI);
   assert.equal(res.statusCode, 502);
@@ -995,20 +1110,22 @@ test("explains an empty reply caused by the token limit", async () => {
   assert.equal(upstreamCalls.length, 2);
 });
 
-const CONFIGURED_EFFORT = /const REASONING_EFFORT = "([^"]+)"/.exec(readFileSync(new URL("../api/chat.js", import.meta.url), "utf8"))[1];
-
-test("sends the configured, documented reasoning_effort (never the default depth)", async () => {
-  assert.ok(["none", "minimal", "low"].includes(CONFIGURED_EFFORT), `unexpected effort ${CONFIGURED_EFFORT}`);
-  mockUpstream(ok("Sure, happy to help."));
-  await call(HI);
-  assert.equal(upstreamCalls[0].body.reasoning_effort, CONFIGURED_EFFORT);
-});
-
-test("maps a NaraRouter 429 to a friendly 429", async () => {
-  mockUpstream({ status: 429, body: { error: { type: "rate_limited", message: "too many" } } });
+test("maps an Anthropic 429 to a friendly 429", async () => {
+  mockUpstream({ status: 429, body: { type: "error", error: { type: "rate_limit_error", message: "too many" } } });
   const res = await call(HI);
   assert.equal(res.statusCode, 429);
   assert.equal(res.payload.code, "rate_limited");
+});
+
+test("maps an Anthropic 529 (overloaded) to a retryable error", async () => {
+  mockSequence(
+    { status: 529, body: { type: "error", error: { type: "overloaded_error", message: "Overloaded" } } },
+    ok("recovered after overload")
+  );
+  const res = await call(HI);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload.reply, "recovered after overload");
+  assert.equal(upstreamCalls.length, 2);
 });
 
 test("an unreadable 200 response is a bad_response error, not an empty reply", async () => {
@@ -1022,18 +1139,18 @@ test("an unreadable 200 response is a bad_response error, not an empty reply", a
 const ATTEMPT_MS = 9000;
 const TIMEOUT_MESSAGE = "The AI took too long to respond (tried 2 times, with 9s and 20s deadlines). Please try again.";
 
-test("a stalled first model falls back to the second free model", async () => {
+test("a stalled first attempt falls back to a second attempt with the same model", async () => {
   mockSequence("stall", ok("second attempt reply"));
   const res = await callAdvancing([ATTEMPT_MS], HI);
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.payload.reply, "second attempt reply");
-  assert.equal(res.payload.model, "nemotron-3-ultra-free");
+  assert.equal(res.payload.model, "claude-sonnet-5-5");
   assert.equal(upstreamCalls.length, 2);
   assert.equal(upstreamCalls[1].url, upstreamCalls[0].url);
-  assert.equal(upstreamCalls[1].init.headers.Authorization, "Bearer test-key");
-  assert.equal(upstreamCalls[0].body.model, "nemotron-3-super-free");
-  assert.equal(upstreamCalls[1].body.model, "nemotron-3-ultra-free");
+  assert.equal(upstreamCalls[1].init.headers["x-api-key"], "test-key");
+  assert.equal(upstreamCalls[0].body.model, "claude-sonnet-5-5");
+  assert.equal(upstreamCalls[1].body.model, "claude-sonnet-5-5");
   assert.deepEqual(upstreamCalls[1].body.messages, upstreamCalls[0].body.messages);
   assert.deepEqual(JSON.parse(logs.out[0]).attempts.map((a) => a.outcome), ["timeout", "ok"]);
 });
@@ -1147,8 +1264,9 @@ test("never retries non-retryable upstream errors or an unreadable response", as
 test("logs one structured line per request, without the key or message text", async () => {
   mockUpstream({
     body: {
-      choices: [{ message: { content: "answer", reasoning_content: "thinking" }, finish_reason: "stop" }],
-      usage: { prompt_tokens: 10, completion_tokens: 30, completion_tokens_details: { reasoning_tokens: 20 } },
+      content: [{ type: "text", text: "answer" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 30 },
     },
   });
   await call({ body: { messages: [{ role: "user", content: "my very private question about measurements" }] } });
@@ -1158,12 +1276,11 @@ test("logs one structured line per request, without the key or message text", as
   const entry = JSON.parse(logs.out[0]);
   assert.equal(entry.event, "chat");
   assert.equal(entry.outcome, "ok");
-  assert.equal(entry.model, "nemotron-3-super-free");
-  assert.equal(entry.reasoningEffort, CONFIGURED_EFFORT);
+  assert.equal(entry.model, "claude-sonnet-5-5");
   assert.equal(entry.upstreamStatus, 200);
-  assert.equal(entry.finishReason, "stop");
-  assert.equal(entry.reasoningTokens, 20);
-  assert.equal(entry.hadReasoning, true);
+  assert.equal(entry.finishReason, "end_turn");
+  assert.equal(entry.promptTokens, 10);
+  assert.equal(entry.completionTokens, 30);
   assert.equal(entry.replyChars, 6);
   assert.equal(typeof entry.totalMs, "number");
   assert.ok(entry.requestId);
@@ -1398,14 +1515,14 @@ const MSG = "I am curious about water testing";
 const u = (content) => ({ role: "user", content });
 const a = (content) => ({ role: "assistant", content });
 const sentRoles = () => upstreamCalls[0].body.messages.map((m) => m.role[0]).join("");
-const sentSystem = () => upstreamCalls[0].body.messages[0].content;
+const sentSystem = () => upstreamCalls[0].body.system;
 
 test("the same message sent again after an answer is flagged to the model as a repeat", async () => {
   mockUpstream(ok("Sure, happy to help."));
   const res = await call({ body: { messages: [u(MSG), a("Which test kit do you have?"), u(MSG)] } });
 
   assert.equal(res.statusCode, 200);
-  assert.equal(sentRoles(), "suau"); // history untouched, still exactly one system message
+  assert.equal(sentRoles(), "uau"); // history untouched, sent as a single separate system prompt
   assert.match(sentSystem(), /REPEATED MESSAGE/);
   assert.match(sentSystem(), /Do NOT repeat or restate anything you already told them/);
   assert.match(sentSystem(), /do not re-list tests or parameters/);
@@ -1453,7 +1570,7 @@ test("different messages, and short replies like 'yes', are never flagged", asyn
 test("a message resent after a failure (no AI reply in between) is sent once and not flagged", async () => {
   mockUpstream(ok("Sure, happy to help."));
   await call({ body: { messages: [u(MSG), u(MSG)] } });
-  assert.equal(sentRoles(), "su", "the unanswered first copy is collapsed");
+  assert.equal(sentRoles(), "u", "the unanswered first copy is collapsed");
   assert.doesNotMatch(sentSystem(), /REPEATED MESSAGE/);
   const entry = JSON.parse(logs.out[0]);
   assert.equal(entry.droppedUnansweredRepeats, 1);
@@ -1462,20 +1579,22 @@ test("a message resent after a failure (no AI reply in between) is sent once and
   // three failed attempts in a row collapse to one
   mockUpstream(ok("Sure, happy to help."));
   await call({ body: { messages: [u(MSG), u(MSG), u(MSG)] } });
-  assert.equal(sentRoles(), "su");
+  assert.equal(sentRoles(), "u");
 
   // a resend after an earlier answered turn: context kept, still not a repeat
   mockUpstream(ok("Sure, happy to help."));
   await call({ body: { messages: [u("first"), a("hello"), u(MSG), u(MSG)] } });
-  assert.equal(sentRoles(), "suau");
+  assert.equal(sentRoles(), "uau");
   assert.doesNotMatch(sentSystem(), /REPEATED MESSAGE/);
 });
 
 test("a different message after a failed one keeps the failed message as context", async () => {
   mockUpstream(ok("Sure, happy to help."));
   await call({ body: { messages: [u(MSG), u("It has been green for 3 days")] } });
-  assert.equal(sentRoles(), "suu");
-  assert.equal(upstreamCalls[0].body.messages[1].content, MSG);
+  // Anthropic requires alternating roles, so the two consecutive user turns are merged
+  // into one message; both texts still reach the model.
+  assert.equal(sentRoles(), "u");
+  assert.equal(upstreamCalls[0].body.messages[0].content, `${MSG}\nIt has been green for 3 days`);
 });
 
 test("timeout recovery: after a double timeout the next request succeeds normally", async () => {
@@ -1489,8 +1608,8 @@ test("timeout recovery: after a double timeout the next request succeeds normall
   const retried = await call({ body: { messages: [u(MSG), u(MSG)] } });
   assert.equal(retried.statusCode, 200);
   assert.equal(retried.payload.reply, "recovered");
-  assert.equal(upstreamCalls[2].body.messages.map((m) => m.role[0]).join(""), "su");
-  assert.doesNotMatch(upstreamCalls[2].body.messages[0].content, /REPEATED MESSAGE/);
+  assert.equal(upstreamCalls[2].body.messages.map((m) => m.role[0]).join(""), "u");
+  assert.doesNotMatch(upstreamCalls[2].body.system, /REPEATED MESSAGE/);
 });
 
 test("caps output at 1000 tokens", async () => {
@@ -1499,23 +1618,10 @@ test("caps output at 1000 tokens", async () => {
   assert.equal(upstreamCalls[0].body.max_tokens, 1000);
 });
 
-test("API code references only the chosen model, not the removed ones", () => {
+test("API code references only the Anthropic API, not the removed NaraRouter integration", () => {
   const src = readFileSync(new URL("api/chat.js", root), "utf8");
-  assert.doesNotMatch(src, /auto\/bynara|deepseek/);
-});
-
-// Opt-in (needs internet): CHECK_LIVE_MODELS=1 npm test
-// Confirms the model is still offered on NaraRouter's public Free plan.
-test("model is on NaraRouter's live Free plan", { skip: !process.env.CHECK_LIVE_MODELS }, async () => {
-  const source = readFileSync(new URL("api/chat.js", root), "utf8");
-  const configured = /const DEFAULT_MODELS = \[([^\]]+)\]/.exec(source);
-  assert.ok(configured, "default model list should be defined");
-  const models = [...configured[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
-  const plans = await (await realFetch("https://router.bynara.id/api/plans")).json();
-  const free = plans.data.find((p) => p.code === "free");
-  for (const model of models) {
-    assert.ok(free.models.includes(model), `${model} is not on the Free plan: ${free.models.join(", ")}`);
-  }
+  assert.doesNotMatch(src, /NARA_ROUTER|nemotron|bynara|nex-n2\.5-pro/i);
+  assert.match(src, /api\.anthropic\.com/);
 });
 
 test("index.html clears the thinking state and abort timer in a finally block", () => {
@@ -1533,12 +1639,12 @@ test("worst-case catalog and model time fit inside the browser limit and maxDura
   const vercel = JSON.parse(readFileSync(new URL("vercel.json", root), "utf8"));
   const browserMs = Number(/controller\.abort\(\),(\d+)\)/.exec(html)[1]);
   const attemptMs = Number(/const ATTEMPT_TIMEOUT_MS = (\d+)/.exec(api)[1]);
-  const fallbackMs = Number(/const MODEL_FALLBACK_TIMEOUT_MS = (\d+)/.exec(api)[1]);
+  const fallbackMs = Number(/const RETRY_TIMEOUT_MS = (\d+)/.exec(api)[1]);
   const catalogMs = Number(/const TOTAL_TIMEOUT_MS = (\d+)/.exec(catalog)[1]);
   const attempts = Number(/const MAX_ATTEMPTS = (\d+)/.exec(api)[1]);
   assert.equal(attemptMs, 9000);
   assert.equal(fallbackMs, 20000);
-  assert.equal(attempts, 1);
+  assert.equal(attempts, 2);
   assert.equal(browserMs, 40000);
   assert.ok(attemptMs + fallbackMs + catalogMs < browserMs, "catalog plus the longest model path must fit in the browser deadline");
   assert.ok(browserMs < vercel.functions["api/chat.js"].maxDuration * 1000);
@@ -1547,15 +1653,15 @@ test("worst-case catalog and model time fit inside the browser limit and maxDura
 test("index.html always calls /api/chat and has no key, system prompt, or demo fallback", () => {
   const html = readFileSync(new URL("index.html", root), "utf8");
   assert.match(html, /fetch\(\s*["']\/api\/chat["']/);
-  assert.doesNotMatch(html, /NARA_ROUTER_API_KEY|NARA_API_KEY|Bearer|router\.bynara\.id|sk-[A-Za-z0-9]/);
+  assert.doesNotMatch(html, /ANTHROPIC_API_KEY|x-api-key|api\.anthropic\.com|sk-[A-Za-z0-9]/);
   assert.doesNotMatch(html, /function\s+fallback|AI_SYSTEM_PROMPT|role:\s*["']system["']/);
 });
 
 test(".env.example uses a key placeholder and .env is ignored", () => {
   const example = readFileSync(new URL(".env.example", root), "utf8");
   const gitignore = readFileSync(new URL(".gitignore", root), "utf8");
-  assert.match(example, /^NARA_ROUTER_API_KEY=your-nararouter-api-key$/m);
-  assert.doesNotMatch(example, /^NARA_ROUTER_API_KEY=(?!your-nararouter-api-key$).+$/m);
+  assert.match(example, /^ANTHROPIC_API_KEY=your-anthropic-api-key$/m);
+  assert.doesNotMatch(example, /^ANTHROPIC_API_KEY=(?!your-anthropic-api-key$).+$/m);
   assert.match(gitignore, /^\.env$/m);
   assert.match(gitignore, /^\.env\.\*$/m);
 });

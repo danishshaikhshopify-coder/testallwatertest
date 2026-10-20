@@ -490,7 +490,7 @@ const NO_MATCH_TOPIC_MAX = 3;
 function noMatchTopic(needs) {
   const explicit = parameterLabels(needs.explicit);
   if (explicit.length) return explicit.slice(0, NO_MATCH_TOPIC_MAX).join(", ");
-  return needs.label || parameterLabels(needs.parameters).slice(0, NO_MATCH_TOPIC_MAX).join(", ") || "this";
+  return needs.productQuery || needs.label || parameterLabels(needs.parameters).slice(0, NO_MATCH_TOPIC_MAX).join(", ") || "what the customer asked for";
 }
 
 function productContext(needs, catalog) {
@@ -499,11 +499,19 @@ function productContext(needs, catalog) {
     const n = catalog.products.length;
     const [primary, ...extra] = catalog.products;
     const covers = [...new Set(catalog.products.flatMap((p) => p.covers))].join(", ");
-    let note = `PRODUCT CONTEXT: The app is showing ${n} real TestAllWater product${n === 1 ? "" : "s"} as product cards under your reply, listed for: ${covers}. Tests relevant to this conversation: ${topics}.`;
-    note += ` Recommend clearly: the first one (covering ${primary.covers.join(", ")}) is the best fit for what the customer described. Connect their problem to why these parameters matter, then present it as your main recommendation. Call it "the option below" (or "the first option" if more than one is shown) — never name, price or link it yourself.`;
+    // A product/brand lookup or a plain browse request covers no specific parameter (covers is
+    // empty) — the model is told that plainly instead of being handed an empty list to describe.
+    let note = covers
+      ? `PRODUCT CONTEXT: The app is showing ${n} real TestAllWater product${n === 1 ? "" : "s"} as product cards under your reply, listed for: ${covers}. Tests relevant to this conversation: ${topics}.`
+      : `PRODUCT CONTEXT: The app is showing ${n} real TestAllWater product${n === 1 ? "" : "s"} as product cards under your reply, matching ${needs.productQuery ? `the product the customer asked about` : "what the customer wants to browse"}.`;
+    note += primary.covers.length
+      ? ` Recommend clearly: the first one (covering ${primary.covers.join(", ")}) is the best fit for what the customer described. Connect their problem to why these parameters matter, then present it as your main recommendation. Call it "the option below" (or "the first option" if more than one is shown) — never name, price or link it yourself.`
+      : ` Present ${n === 1 ? "it" : "them"} as "the option${n === 1 ? "" : "s"} below" — never name, price or link ${n === 1 ? "it" : "them"} yourself.`;
     if (extra.length) {
       const extraCovers = [...new Set(extra.flatMap((p) => p.covers))].join(", ");
-      note += ` ${extra.length === 1 ? "One additional option is" : `${extra.length} additional options are`} also shown, covering: ${extraCovers}. Mention ${extra.length === 1 ? "it" : "them"} only as optional — soft language like "if you want to go a little further..." — and only when genuinely useful here, never as a requirement and never just to add more products.`;
+      note += extraCovers
+        ? ` ${extra.length === 1 ? "One additional option is" : `${extra.length} additional options are`} also shown, covering: ${extraCovers}. Mention ${extra.length === 1 ? "it" : "them"} only as optional — soft language like "if you want to go a little further..." — and only when genuinely useful here, never as a requirement and never just to add more products.`
+        : ` ${extra.length === 1 ? "One more option is" : `${extra.length} more options are`} also shown.`;
     } else {
       note += " There is nothing else to add beyond this one unless the customer asks for more.";
     }

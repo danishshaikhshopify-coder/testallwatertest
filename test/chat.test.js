@@ -898,13 +898,23 @@ test("a frustrated customer who says to stop asking questions gets products from
   assert.ok(response.payload.products?.length);
 });
 
-test('"just show me products" with no water type yet still asks the one unavoidable question', async () => {
+// Product-discovery redesign: a genuinely context-free "just show me products" is explicit
+// browse intent (per the product-discovery redesign) and must never be interrogated first, not
+// even for the water type — it searches a generic, representative slice of the catalog
+// immediately. (Previously this asked "what kind of water" first; that was exactly the kind of
+// unnecessary interrogation the redesign set out to remove — see the "explicit browse-products
+// request" test group below for the full behavior this replaces.)
+test('"just show me products" with no water type yet searches immediately, with no interrogation', async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("Here are some options to start with.") });
   const response = await call({ body: { messages: [{ role: "user", content: "just show me products" }] } });
-  assert.equal(response.payload.ready, false);
+  assert.equal(response.payload.ready, true);
   assert.equal(response.payload.state.relaxedReadiness, true);
-  assert.equal(response.payload.readiness.nextMissingField, "waterType");
-  assert.match(response.payload.reply, /what kind of water/i);
-  assert.equal(response.payload.products, undefined);
+  assert.equal(response.payload.state.waterType, null, "no water type is guessed or required");
+  assert.doesNotMatch(response.payload.reply ?? "", /what kind of water/i);
+  assert.ok(response.payload.products?.length, "a representative slice of the catalog is returned, not nothing");
 });
 
 test('once relaxed, "just show me products" stays relaxed for the rest of the conversation', async () => {

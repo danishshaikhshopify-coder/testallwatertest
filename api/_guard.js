@@ -8,6 +8,7 @@
 // Files starting with "_" in /api are helpers, not Vercel functions.
 
 import { STORE_HOST } from "./_catalog.js";
+import { BRANDS } from "./_needs.js";
 
 // A money amount: a currency symbol/code next to a number, or a number followed by a currency word.
 const PRICE = /(?:[£$€]|\b(?:gbp|usd|eur|pkr|inr|rs\.?)\s?)\s?\d|\d[\d,.]*\s?(?:[£$€]|\b(?:pounds?|gbp|usd|euros?|dollars?)\b)/i;
@@ -15,13 +16,10 @@ const PRICE = /(?:[£$€]|\b(?:gbp|usd|eur|pkr|inr|rs\.?)\s?)\s?\d|\d[\d,.]*\s?
 // A link or a web address.
 const URL_LIKE = /https?:\/\/\S+|\bwww\.\S+|\b[a-z0-9-]+\.(?:com|co\.uk|net|org|io|store|shop|uk)\b\S*/gi;
 
-// Brands that sell water-test products. A sentence naming one of these next to a product word is
-// treated as a product claim, and only allowed when that brand is on a card being shown.
-const BRANDS = [
-  "lovibond", "palintest", "hanna", "hach", "lamotte", "la motte", "milwaukee", "eutech", "trace2o", "idexx",
-  "johnson analytica", "water-i.d", "water-id", "poollab", "test all water", "testallwater", "easy dip", "exact micro",
-  "tetra", "jbl", "sera", "salifert", "seachem", "red sea", "nyos", "aquachek", "taylor", "api",
-];
+// Brands that sell water-test products (api/_needs.js's BRANDS — also used there to recognize a
+// specific product lookup, e.g. "Do you have the Lovibond Checkit?"). A sentence naming one of
+// these next to a product word is treated as a product claim here, and only allowed when that
+// brand is on a card being shown.
 const BRAND_RE = new RegExp(`(?:^|[^a-z0-9])(${BRANDS.map((b) => b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![a-z0-9])`, "i");
 const PRODUCT_WORD = /\b(kits?|strips?|tablets?|testers?|photometers?|meters?|checkers?|reagents?|packs?|model|series|comparators?|dipslides?)\b/i;
 

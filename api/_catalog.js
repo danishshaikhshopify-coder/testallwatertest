@@ -109,6 +109,15 @@ export function buildQueries(needs) {
   } else if (!queries.length) {
     for (const id of needs.parameters.slice(0, 3)) queries.push(term(id));
   }
+  // A specific product/brand lookup (e.g. "the Lovibond Checkit 5 in 1") searches the store
+  // directly by that text — Shopify's own product search matches on title, so this reaches the
+  // real product without this code maintaining a brand/model catalog of its own. Takes priority
+  // over any parameter-based query, as a named product is the most precise signal available.
+  if (needs.productQuery) queries.unshift(needs.productQuery);
+  // An explicit "just show me what you have" with nothing more specific to go on: queries stand
+  // in for "browse the test-kit range" instead of leaving nothing to search for (findProducts
+  // would otherwise report "no_match" having searched for nothing at all).
+  if (!queries.length && needs.browseIntent) queries.push("water test kit", "water testing", "test strips");
   return [...new Set(queries)].slice(0, MAX_QUERIES);
 }
 
@@ -183,9 +192,14 @@ export function scoreCandidate(c, needs) {
   // the title: tags such as "Test Kits" are attached to reagents too.
   if (CONSUMABLE_FORM.test(c.title) && !KIT_FORM.test(c.title) && !needs.wantsConsumables) return null;
 
+  // A specific product/brand lookup or a pure "show me what you have" browse request names no
+  // parameter at all — there is nothing to "cover", so a genuine, in-stock, non-excluded test
+  // product qualifies on its own (everything checked above this point already did that work).
+  const hasParameters = needs.parameters.length > 0;
+
   // Only what the listing itself says counts as "covers" (title, type, tags), never the search rank.
-  const covered = needs.parameters.filter((id) => PARAM_BY_ID[id].product.test(main));
-  if (!covered.length) return null;
+  const covered = hasParameters ? needs.parameters.filter((id) => PARAM_BY_ID[id].product.test(main)) : [];
+  if (hasParameters && !covered.length) return null;
 
   let ctxBonus = 0;
   let ctxInTitle = false;
@@ -197,20 +211,32 @@ export function scoreCandidate(c, needs) {
     ctxInTitle = FAMILY_TEXT[wanted].test(`${c.title} ${c.type}`);
   }
 
-  // A generic tag is not enough (an industrial "silt density" kit is tagged with "iron"):
-  // the title must name a needed parameter, or the title itself must target this kind of water.
-  const titleCovers = needs.parameters.some((id) => PARAM_BY_ID[id].product.test(`${c.title} ${c.type}`));
-  if (!titleCovers && !ctxInTitle) return null;
+  if (hasParameters) {
+    // A generic tag is not enough (an industrial "silt density" kit is tagged with "iron"):
+    // the title must name a needed parameter, or the title itself must target this kind of water.
+    const titleCovers = needs.parameters.some((id) => PARAM_BY_ID[id].product.test(`${c.title} ${c.type}`));
+    if (!titleCovers && !ctxInTitle) return null;
+  }
+
+  const kind = CONSUMABLE_FORM.test(main) && !KIT_FORM.test(main) ? -2 : KIT_FORM.test(main) ? 2 : INSTRUMENT_FORM.test(main) ? 1 : 0;
+  const instrument = INSTRUMENT_FORM.test(main);
+
+  if (!hasParameters) {
+    // Everything that must be true of a real, sellable test product has already been checked
+    // above (available, not excluded/an accessory/a lone consumable, genuinely a test); a flat
+    // base score (always at or above MIN_SCORE) lets context/kit bonuses order the results
+    // without needing any "covered parameter" to compare against.
+    const score = MIN_SCORE + ctxBonus + kind;
+    return { score, covered, ctx: ctxBonus > 0, instrument };
+  }
 
   // What the customer named counts most, what their symptoms imply next, then the usual checklist.
   const explicitCovered = covered.filter((id) => needs.explicit.includes(id)).length;
   const symptomCovered = covered.filter((id) => !needs.explicit.includes(id) && (needs.symptomParams ?? []).includes(id)).length;
   const defaultCovered = covered.length - explicitCovered - symptomCovered;
-  const kind = CONSUMABLE_FORM.test(main) && !KIT_FORM.test(main) ? -2 : KIT_FORM.test(main) ? 2 : INSTRUMENT_FORM.test(main) ? 1 : 0;
   const bodyBonus = needs.parameters.filter((id) => !covered.includes(id) && PARAM_BY_ID[id].product.test(c.body)).length * 0.5;
 
   const score = explicitCovered * 4 + symptomCovered * 3 + defaultCovered * 2 + ctxBonus + kind + bodyBonus;
-  const instrument = INSTRUMENT_FORM.test(main);
   return score >= MIN_SCORE ? { score, covered, ctx: ctxBonus > 0, instrument } : null;
 }
 
@@ -271,6 +297,13 @@ function joinList(items) {
 
 // The only sentence we write: it lists parameters verified in the product's own listing.
 export function buildReason(covered, needs) {
+  if (!covered.length) {
+    // A product/brand lookup or a browse request names no parameter to list — say so plainly
+    // instead of writing "Listed for  testing" with nothing to fill the gap.
+    return needs.productQuery
+      ? "A TestAllWater test kit matching what you asked about."
+      : "A TestAllWater water-testing product that may be a good starting point.";
+  }
   const ordered = [...covered.filter((id) => needs.explicit.includes(id)), ...covered.filter((id) => !needs.explicit.includes(id))];
   const list = joinList(ordered.slice(0, 4).map(shortLabel));
   const why = needs.label ? `relevant to ${needs.label}` : "relevant to what you asked about";

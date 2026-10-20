@@ -74,6 +74,61 @@ const DEFAULTS = {
   drinking: ["ph", "chlorine", "hardness", "nitrate", "lead"],
 };
 
+// Pool and spa are one family of product, as are aquarium/pond and well/drinking — a pool kit
+// is never the right answer for a fish tank. Mirrors api/_catalog.js's own FAMILY grouping
+// (kept as an independent copy rather than imported, so this module's parameter-ambiguity
+// classification below has no dependency on the catalog layer).
+const WATER_FAMILY = { pool: "pool", spa: "pool", aquarium: "aquatic", pond: "aquatic", well: "supply", drinking: "supply" };
+
+// A parameter is "ambiguous" when it is a default check for more than one FAMILY of water (e.g.
+// chlorine matters for pool/spa AND drinking water, and the right product genuinely differs by
+// family — so knowing the water type still changes the recommendation). A parameter that is
+// either a default for only one family, or never defaulted at all (named explicitly only, e.g.
+// PFAS or iron), is "unambiguous": once the customer names it, the water type no longer changes
+// which product is right, so it should not block a recommendation. Computed from DEFAULTS
+// itself rather than a hand-maintained list, so it can never drift out of sync with it.
+const AMBIGUOUS_PARAMS = new Set(
+  Object.entries(
+    Object.entries(DEFAULTS).reduce((families, [context, ids]) => {
+      const family = WATER_FAMILY[context];
+      for (const id of ids) (families[id] ??= new Set()).add(family);
+      return families;
+    }, {})
+  )
+    .filter(([, families]) => families.size > 1)
+    .map(([id]) => id)
+);
+
+// Real TestAllWater-carried brands (the same list api/_guard.js uses to catch the model naming a
+// product it shouldn't). Exported from here, the more foundational module, so _guard.js imports
+// it rather than each file keeping its own copy.
+export const BRANDS = [
+  "lovibond", "palintest", "hanna", "hach", "lamotte", "la motte", "milwaukee", "eutech", "trace2o", "idexx",
+  "johnson analytica", "water-i.d", "water-id", "poollab", "test all water", "testallwater", "easy dip", "exact micro",
+  "tetra", "jbl", "sera", "salifert", "seachem", "red sea", "nyos", "aquachek", "taylor", "api",
+];
+const BRAND_LOOKUP = new RegExp(`\\b(${BRANDS.map((b) => b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
+// Phrasing that asks whether the store carries something specific, as opposed to just mentioning
+// a brand in passing.
+const PRODUCT_LOOKUP_PHRASE = /\bdo you (?:have|sell|stock|carry|do|offer)\b|\blooking for\b|\bsearching for\b|\bcan i (?:get|buy|find)\b/i;
+
+// A specific named product/brand request (e.g. "Do you have the Lovibond Checkit 5 in 1?") —
+// searched directly against the store's own product search (which matches on title), rather
+// than by parameter, since there is no catalog of exact model names to match against here. Only
+// triggers alongside a real "do you have/sell X" style question or a test-ish word, so an
+// incidental brand mention in passing ("I had a Hanna meter years ago") is not treated the same
+// way; see api/_guard.js's BRAND_RE for the matching list this reuses.
+function detectProductQuery(text) {
+  if (!BRAND_LOOKUP.test(text)) return null;
+  if (!PRODUCT_LOOKUP_PHRASE.test(text) && !TESTWORD.test(text)) return null;
+  const cleaned = text
+    .replace(/^.*?\b(?:do you (?:have|sell|stock|carry|do|offer)|looking for|searching for|can i (?:get|buy|find))\b/i, "")
+    .replace(/^\s*(?:the|a|an)\s+/i, "")
+    .replace(/[?!.]+\s*$/, "")
+    .trim();
+  return (cleaned || text.trim()).slice(0, 120) || null;
+}
+
 // Symptoms that add parameters (context is required for most; a null context means "any").
 const SYMPTOMS = [
   { re: /gasping|oxygen|lethargic|at the surface/i, adds: ["dissolved_oxygen"], contexts: ["aquarium", "pond"] },
@@ -89,13 +144,23 @@ const PROBLEM = /cloudy|green|murky|foam|smell|odou?r|taste|stain|dirty|algae|it
 const TESTWORD = /\btest(?:s|ing|ed|er|ers)?\b|\bkit\b|\bstrips?\b|\bmeter\b|\bphotometer\b|\bchecker\b/i;
 const INTENT = /\b(buy|purchase|order|price|cost|how much|which (?:test|kit|strips?|product)|what (?:test|kit|strips?|product)|recommend|suggest|looking for|i need (?:a|an|some)|do you (?:sell|have|stock)|where can i (?:get|buy)|shop|product)s?\b/i;
 const HAS_VALUE = /\b\d+(?:[.,]\d+)?\s*(?:ppm|mg\/?l|ppb|µg\/?l|ug\/?l|µs|us\/?cm|ms\/?cm|°?[fd]h|dh|%)|\b(?:ph|chlorine|alkalinity|nitrate|nitrite|ammonia|cya|cyanuric acid|hardness|phosphate|tds|bromine|iron|copper|lead)\s*(?:is|was|of|=|:|at|reads?|read|showing|shows?)?\s*\d/i;
+// An explanation-seeking question ("What does pH mean?", "Do I need to test alkalinity?") rather
+// than a product request — naming a parameter here must not, on its own, be read as wanting
+// products (see its two uses below). Anchored to the start of the message, not the whole
+// conversation, so it only ever describes the customer's LATEST turn.
+const EDUCATIONAL_QUESTION = /^\s*(?:what(?:'?s| is| does| are)\b|why(?: is| does| do| are)\b|how(?: does| do)\b|do i need to\b|should i\b|is it (?:important|necessary)\b|what'?s? the difference\b)/i;
 
 // An explicit request to skip ahead to products, or frustration with the questions. Once seen,
-// the readiness gate stops asking the "soft" fields (goal, scope, subtype/source) and works
-// with whatever is already known — help first, sell second, per the product-recommendation
-// rules this assistant follows. A minimal anchor (the kind of water) is still needed to search
-// on, so that single question is not skipped.
-const SHOW_PRODUCTS_REQUEST = /\bjust show me\b|\bshow me (?:the |some )?products\b|\bshow me what you have\b|\bskip (?:the )?questions\b|\bskip ahead\b|\bno more questions\b|\b(?:just )?want(?:s|ed)? to see (?:the )?(?:products|options)\b|\bcan you just (?:show|recommend)\b|\bjust (?:recommend|suggest) something\b|\benough questions\b|\bjust tell me what to (?:buy|get)\b/i;
+// the readiness gate stops asking the "soft" fields (goal, scope, subtype/source) — and, for a
+// genuinely context-free "just show me what you have", the kind-of-water question too (see
+// canSkipWaterType below): a customer who explicitly asked to browse should never be
+// interrogated first, per the product-discovery redesign.
+// The "show me ... products/kits/tests/options" and "want(s/ed) to see ... products/options/
+// tests/kits" branches allow ordinary words in between ("show me your water testing products",
+// "I just want to see your water testing products") rather than only the exact phrase, and
+// "what ... kits/tests/products do you sell/have/offer/carry" / "what do you have for/in ..."
+// cover the equally natural "asking, not telling" phrasing of the same browse request.
+const SHOW_PRODUCTS_REQUEST = /\bjust show me\b|\bshow me\b[^.!?\n]{0,40}\b(?:products|options|kits?|tests?|strips?|what you (?:have|sell|offer))\b|\bskip (?:the )?questions\b|\bskip ahead\b|\bno more questions\b|\bwant(?:s|ed)? to see\b[^.!?\n]{0,40}\b(?:products|options|tests|kits|what you (?:have|sell|offer))\b|\bcan you just (?:show|recommend)\b|\bjust (?:recommend|suggest) something\b|\benough questions\b|\bjust tell me what to (?:buy|get)\b|\bjust browsing\b|\bi(?:'m| am) just looking\b|\bwhat\b[^.!?\n]{0,30}\b(?:kits?|tests?|products?|strips?)\b[^.!?\n]{0,20}\bdo you (?:sell|have|offer|carry)\b|\bwhat do you have (?:for|in)\b/i;
 const FRUSTRATION = /\bstop asking(?: me)?\b|\btoo many questions\b|\bthis is taking (?:too long|forever)\b|\bi(?:'m| am) frustrat\w*\b|\bannoy(?:ed|ing)\b|\bjust answer\b|\bi don'?t want to answer (?:more|any more) questions\b/i;
 const RELAXED_READINESS_TRIGGER = new RegExp(`${SHOW_PRODUCTS_REQUEST.source}|${FRUSTRATION.source}`, "i");
 
@@ -207,6 +272,10 @@ export function deriveConversationState(conversation, previousState = null) {
     parameters: Array.isArray(previousState?.parameters)
       ? unique(previousState.parameters.filter((id) => Object.hasOwn(PARAM_BY_ID, id)))
       : [],
+    // Recomputed fresh from the latest turn's own text every time (see the turn loop below),
+    // never carried forward from a stale earlier turn — a specific product lookup should only
+    // drive this turn's search, not keep the conversation "stuck" searching for it later.
+    productQuery: typeof previousState?.productQuery === "string" ? previousState.productQuery : null,
     issues: Array.isArray(previousState?.issues)
       ? unique(previousState.issues.filter((issue) => ISSUE_WORDS.includes(issue)))
       : [],
@@ -331,15 +400,32 @@ export function deriveConversationState(conversation, previousState = null) {
     }
     if (!state.waterSource && state.drinkingSource) state.waterSource = state.drinkingSource;
 
+    state.productQuery = detectProductQuery(text);
+
     const normalized = text.toLowerCase().replace(/\bsalt\s+water\b/g, "saltwater").replace(/\bph\b/gi, "pH");
     const isTreatmentAnswer = (requestedField === "treatment" || POOL_TREATMENT_QUESTION.test(priorAssistant) ||
       (state.treatment && state.issue !== "green_water")) &&
       /^\s*(?:bromine|chlorine|salt\s*water|saltwater)\s*[.!]?\s*$/i.test(text);
-    state.parameters = unique([
-      ...state.parameters,
-      ...PARAMS.filter((parameter) => parameter.user.test(normalized) &&
-        !(isTreatmentAnswer && ["bromine", "chlorine"].includes(parameter.id))).map((parameter) => parameter.id),
-    ]);
+    const newlyExplicit = PARAMS.filter((parameter) => parameter.user.test(normalized) &&
+      !(isTreatmentAnswer && ["bromine", "chlorine"].includes(parameter.id))).map((parameter) => parameter.id);
+
+    // A newly-named parameter with nothing to do with the kind of water already being discussed
+    // (e.g. "Actually, do you sell nitrate tests?" mid pool-chlorine conversation), said with
+    // topic-change language, is a topic change just as much as explicitly naming a different
+    // kind of water — so it is handled the same way: the old water type's own flow (its issue,
+    // goal, testing scope) is cleared rather than silently mixed into a pool recommendation, or
+    // left stuck asking the old question. A fresh "what kind of water" (or none at all, if the
+    // new parameter turns out to be unambiguous — see canSkipWaterType) follows naturally from
+    // the normal flow below once waterType is cleared.
+    const topicChangedParameter = state.waterType && SWITCH_INTENT.test(text) &&
+      newlyExplicit.some((id) => !(DEFAULTS[state.waterType] ?? []).includes(id));
+    if (topicChangedParameter) {
+      resetWaterSpecificState(state, null);
+      state.goal = null;
+      state.parameters = unique(newlyExplicit);
+    } else {
+      state.parameters = unique([...state.parameters, ...newlyExplicit]);
+    }
 
     const recognizedIssue = detectIssue(text);
     if (recognizedIssue) {
@@ -355,8 +441,10 @@ export function deriveConversationState(conversation, previousState = null) {
     else if (recognizedIssue || PROBLEM.test(text) || /\b(?:too high|too low|high levels?|low levels?)\b/i.test(text)) state.goal = "troubleshooting";
     else if (state.waterType === "pool" && requestedField === "goal" &&
       /^\s*(?:routine testing|routine|general testing)\s*[.!]?\s*$/i.test(text)) state.goal = "routine_testing";
-    else if (!state.goal && (INTENT.test(text) || TESTWORD.test(text) || state.parameters.length)) {
+    else if (!state.goal && (INTENT.test(text) || TESTWORD.test(text) ||
+      (!EDUCATIONAL_QUESTION.test(text) && (state.parameters.length || state.productQuery)))) {
       state.goal = state.parameters.length ? "parameter-specific testing" :
+        state.productQuery ? "product lookup" :
         (state.waterType === "pool" ? null : "general testing");
     }
 
@@ -402,6 +490,28 @@ export function deriveConversationState(conversation, previousState = null) {
     if (["drinking", "well"].includes(state.waterType) && state.waterSource && state.parameters.length) {
       state.testingScope = "specific";
     }
+    // Naming a specific parameter already answers "what do you want to check" — once the water
+    // type is known AND the customer has explicitly named at least one parameter, a separate
+    // testing-scope question is just repeating back what they already said. For well/drinking
+    // specifically, a described problem (goal already "troubleshooting", e.g. "my tap water
+    // tastes metallic") answers it just as well even with no literal parameter named yet (the
+    // relevant parameters are only known via the symptom layer, not state.parameters) — asking
+    // "general screen or specific concern" after a problem has already been described is exactly
+    // the kind of redundant question this redesign set out to remove.
+    //
+    // Gated on state.waterType already being one of the four types that ask about testing scope
+    // at all (see getNextMissingField): applying this before the water type is known would
+    // pre-empt the pool/spa troubleshooting-issue flow below, which needs testingScope to still
+    // be unset once waterType actually arrives (e.g. bare "my chlorine seems too high", answered
+    // with the water type several turns later — the "unknown water type" regression tests pin
+    // this). That flow is exempt here too, on purpose: it asks one genuinely richer follow-up
+    // ("do you also know your pH?") instead of silently assuming only the one named parameter.
+    if (["pool", "spa", "drinking", "well"].includes(state.waterType) && !state.testingScope &&
+      (state.parameters.length || (["drinking", "well"].includes(state.waterType) && state.goal === "troubleshooting")) &&
+      !(state.goal === "troubleshooting" &&
+        ["green_water", "cloudy_water", "high_chlorine", "low_chlorine"].includes(state.issue))) {
+      state.testingScope = "specific";
+    }
     if (!requestedField && /\b(?:complete|full)\b.{0,24}\b(?:test|check)\b/i.test(text)) {
       state.testingScope = "complete";
     }
@@ -420,11 +530,30 @@ export function deriveConversationState(conversation, previousState = null) {
   return state;
 }
 
+// Whether the water type can be skipped entirely rather than asked for: the customer explicitly
+// asked to skip ahead or browse (relaxedReadiness), named a specific product/brand
+// (productQuery — the water type plays no part in a direct product lookup), or already named an
+// explicit parameter that is not ambiguous across water-type families (see AMBIGUOUS_PARAMS).
+// In every one of these cases nothing else is required either: goal is already set by the same
+// message that triggered them (an explicit parameter or product/browse request always implies
+// one — see the goal-setting rules above), and every other field below is only ever asked for a
+// specific, known state.waterType, so leaving it unset skips them too.
+//
+// An AMBIGUOUS explicit parameter (chlorine, pH, nitrate) always vetoes this, however the
+// customer is otherwise behaving — frustrated, repeatedly unsure (both also set
+// relaxedReadiness), or explicitly asking to skip ahead — because the water type still
+// genuinely changes which product is right for one of those, and the "unknown water type asks
+// once" regression tests pin exactly that for bare "chlorine".
+function canSkipWaterType(state) {
+  if (state.parameters.some((id) => AMBIGUOUS_PARAMS.has(id))) return false;
+  return state.relaxedReadiness || Boolean(state.productQuery) || state.parameters.length > 0;
+}
+
 export function getNextMissingField(state) {
-  if (!state.waterType) return "waterType";
+  if (!state.waterType && !canSkipWaterType(state)) return "waterType";
   if (state.pendingWaterTypeSwitch) return "waterTypeSwitch";
-  // The customer asked to skip ahead: a minimal anchor (the kind of water) is still required
-  // to search on, but the remaining "soft" fields are no longer asked for.
+  // The customer asked to skip ahead: once relaxed, nothing else is asked for either, even the
+  // kind of water (see canSkipWaterType above).
   if (state.relaxedReadiness) return "ready";
   if (!state.goal) return "goal";
   if (state.waterType === "aquarium" && !state.waterSubtype) return "aquariumType";
@@ -646,7 +775,18 @@ export function analyzeNeeds(messages, state = deriveConversationState(messages.
   const parameters = unique([...explicit, ...symptomParams, ...(hasRare ? [] : (context ? DEFAULTS[context] ?? [] : []))]);
   const productIntent = INTENT.test(text) || TESTWORD.test(text) || Boolean(state.goal);
   const problem = PROBLEM.test(text) || state.goal === "troubleshooting";
-  const wantsProducts = parameters.length > 0 && (productIntent || problem || explicit.length > 0);
+  const productQuery = state.productQuery ?? null;
+  // Explicit "just show me what you have", with nothing more specific to go on (no parameter,
+  // no named product) — a genuine browse request, not a parameter-driven search.
+  const browseIntent = state.relaxedReadiness && parameters.length === 0 && !productQuery;
+  // A bare "explicit.length > 0" would otherwise treat naming a parameter in a pure explanation
+  // question ("What does pH mean?") as a product request on its own; checked against only the
+  // latest message, not the whole conversation, so an earlier educational turn never silences a
+  // later genuine request.
+  const latestMessage = messages.filter((m) => typeof m === "string").at(-1) ?? "";
+  const explicitAlone = explicit.length > 0 && !EDUCATIONAL_QUESTION.test(latestMessage);
+  const wantsProducts = (parameters.length > 0 && (productIntent || problem || explicitAlone)) ||
+    Boolean(productQuery) || browseIntent;
   const descriptor = state.issues.at(-1) ??
     (DESCRIPTORS.exec(text)?.[1] ?? "").toLowerCase().replace("cloudiness", "cloudy").replace("foaming", "foamy");
 
@@ -662,13 +802,15 @@ export function analyzeNeeds(messages, state = deriveConversationState(messages.
     hasValues: HAS_VALUE.test(text),
     label: contextLabel(context) ? [descriptor, contextLabel(context)].filter(Boolean).join(" ") : "",
     hasRare,
+    productQuery,
+    browseIntent,
   };
 }
 
 function determineRecommendationReadiness(messages, needs, conversation, state) {
   const nextMissingField = getNextMissingField(state);
   const missing = [];
-  if (!state.waterType) missing.push("water_type");
+  if (!state.waterType && !canSkipWaterType(state)) missing.push("water_type");
   if (state.pendingWaterTypeSwitch) missing.push("water_type_confirmation");
   if (!state.relaxedReadiness) {
     if (!state.goal) missing.push("goal");

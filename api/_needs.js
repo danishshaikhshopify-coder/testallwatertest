@@ -853,8 +853,11 @@ export function analyzeNeeds(messages, state = deriveConversationState(messages.
   const explicitAlone = explicit.length > 0 && !EDUCATIONAL_QUESTION.test(latestMessage);
   const wantsProducts = (parameters.length > 0 && (productIntent || problem || explicitAlone)) ||
     Boolean(productQuery) || browseIntent;
+  // Scoped to the latest message, not the whole conversation: state.issues is cleared on an
+  // explicit topic change (resetWaterSpecificState), and re-scanning old turns would resurrect
+  // an abandoned symptom (e.g. "cloudy" from a pool question the customer already moved on from).
   const descriptor = state.issues.at(-1) ??
-    (DESCRIPTORS.exec(text)?.[1] ?? "").toLowerCase().replace("cloudiness", "cloudy").replace("foaming", "foamy");
+    (DESCRIPTORS.exec(latestMessage)?.[1] ?? "").toLowerCase().replace("cloudiness", "cloudy").replace("foaming", "foamy");
 
   return {
     context,

@@ -178,6 +178,24 @@ test("topic change: switching to nitrate then explicitly back to pool does not g
   assert.doesNotMatch(response.payload.reply, /what kind of water/i, "switching back to a kind of water already established this turn does not re-ask it");
 });
 
+test("topic change: an abandoned pool symptom does not leak into a later unrelated well recommendation", async () => {
+  // Found live: "My pool water is cloudy" -> "Actually forget the pool, I need a nitrate test"
+  // -> "I have a private well" ended with a product reason reading "relevant to cloudy well
+  // water" even though the customer never said their well was cloudy and had explicitly moved
+  // on from the pool topic.
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("Nitrate is a sensible check for a private well.") });
+  const conversation = [];
+  let response = await sendTurn(conversation, "My pool water is cloudy.");
+  response = await sendTurn(conversation, "Actually forget the pool. I need a nitrate test.", response.payload.state);
+  response = await sendTurn(conversation, "I have a private well.", response.payload.state);
+  const products = response.payload.products ?? [];
+  assert.ok(products.length >= 1, "a well-water nitrate recommendation is made");
+  for (const product of products) {
+    assert.doesNotMatch(product.reason ?? "", /cloudy/i, "the abandoned pool symptom must not appear in a well-water product reason");
+  }
+});
+
 // --- constrainQuestionToState: mentioning a known parameter while explaining it is not the
 // same as redundantly asking for it -------------------------------------------------------
 

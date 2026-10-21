@@ -371,6 +371,7 @@ export function deriveConversationState(conversation, previousState = null) {
         ? { from: previousState.pendingWaterTypeSwitch.from, to: previousState.pendingWaterTypeSwitch.to }
         : null,
     _lastAssistantReply: typeof previousState?._lastAssistantReply === "string" ? previousState._lastAssistantReply : null,
+    _secondLastAssistantReply: typeof previousState?._secondLastAssistantReply === "string" ? previousState._secondLastAssistantReply : null,
     relaxedReadiness: previousState?.relaxedReadiness === true,
     uncertainStreak: Number.isInteger(previousState?.uncertainStreak) ? Math.max(0, previousState.uncertainStreak) : 0,
   };
@@ -804,7 +805,12 @@ export function guidedResponse(state, readiness, latestUserMessage = "") {
       ? "No problem. Are you doing routine testing, or troubleshooting an issue?"
       : "No problem — are you checking something specific, or would a general screen work?";
   }
-  if (reply && reply === state._lastAssistantReply) {
+  // Checked against the last TWO replies, not just one: the uncertain-answer branches above
+  // only have two rotating phrasings per field, so a third+ consecutive non-answer would
+  // otherwise cycle back to the reply from two turns ago without ever matching the immediately
+  // preceding one.
+  const recentlyShown = (text) => text === state._lastAssistantReply || text === state._secondLastAssistantReply;
+  if (reply && recentlyShown(reply)) {
     const isPool = ["pool", "spa"].includes(state.waterType);
     if (field === "goal") reply = "What best describes what you're testing: routine checks or a specific problem?";
     else if (field === "testingScope" && state.goal === "troubleshooting" && isPool) {
@@ -819,7 +825,7 @@ export function guidedResponse(state, readiness, latestUserMessage = "") {
     } else if (field === "waterType") reply = "Which setting is closest to the water you want to test?";
     else reply = "What would you like to share next so I can narrow down the right test?";
   }
-  if (reply && reply === state._lastAssistantReply) {
+  if (reply && recentlyShown(reply)) {
     reply = `I have ${state.issueDetails.at(-1) ?? "your water issue"} noted. What would you like to check next?`;
   }
   return {

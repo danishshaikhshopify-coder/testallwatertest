@@ -684,6 +684,7 @@ export default async function handler(req, res) {
     const guided = guidedResponse(state, readiness, userMessages.at(-1) ?? "");
     state.lastAskedField = guided.field;
     state.lastAskedOptions = guided.options;
+    state._secondLastAssistantReply = state._lastAssistantReply;
     state._lastAssistantReply = guided.reply;
     const meta = {
       requestId,
@@ -777,7 +778,7 @@ export default async function handler(req, res) {
     if (constrainedReply !== result.reply) meta.rejectedKnownFieldQuestion = true;
     let reply = finalizeReply(constrainedReply, needs, catalog, meta);
     let options = [];
-    if (reply && reply === state._lastAssistantReply) {
+    if (reply && (reply === state._lastAssistantReply || reply === state._secondLastAssistantReply)) {
       if (readiness.ready) {
         const parameterSummary = needs.parameters.length ? parameterLabels(needs.parameters).join(", ") : "the relevant parameters";
         reply = `I have your ${state.waterType || "water"} test details noted. Here are the TestAllWater options for ${parameterSummary}.`;
@@ -789,6 +790,7 @@ export default async function handler(req, res) {
         state.lastAskedOptions = next.options;
       }
     }
+    state._secondLastAssistantReply = state._lastAssistantReply;
     state._lastAssistantReply = reply;
     meta.outcome = "ok";
     meta.replyChars = reply.length;

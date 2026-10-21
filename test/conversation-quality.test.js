@@ -196,6 +196,25 @@ test("topic change: an abandoned pool symptom does not leak into a later unrelat
   }
 });
 
+test("short answers: four consecutive non-answers ('Not sure'/'No'/'Yes') never repeat an earlier rephrasing verbatim", async () => {
+  // Found live: Pool -> Not sure -> No -> Yes asked the goal question 4 times; turn 4 repeated
+  // turn 2's exact rephrasing verbatim, because the dedup check only compared against the single
+  // immediately-previous reply, and the uncertain-answer branch only rotates through two fixed
+  // phrasings (so a 3rd+ non-answer cycles back without ever matching the one directly before it).
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("unused") });
+  const conversation = [];
+  const replies = [];
+  let state = null;
+  for (const text of ["Pool", "Not sure", "No", "Yes"]) {
+    const response = await sendTurn(conversation, text, state);
+    state = response.payload.state;
+    replies.push(response.payload.reply);
+  }
+  const lastReply = replies.at(-1);
+  assert.ok(!replies.slice(0, -1).includes(lastReply), `the 4th reply must not repeat an earlier one verbatim: ${JSON.stringify(replies)}`);
+});
+
 // --- constrainQuestionToState: mentioning a known parameter while explaining it is not the
 // same as redundantly asking for it -------------------------------------------------------
 

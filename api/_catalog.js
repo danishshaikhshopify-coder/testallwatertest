@@ -32,6 +32,7 @@ const MAX_QUERIES = 6;
 const MAX_PRODUCTS = 3;
 const MAX_PER_VENDOR = 2;
 const MIN_SCORE = 3; // relevance is already enforced by the title/context rules in scoreCandidate
+const PRO_KIT_PRICE = 300; // GBP; above this a "kit" is treated like a lab instrument
 
 const searchCache = new Map();
 let currencyOkAt = 0;
@@ -219,7 +220,9 @@ export function scoreCandidate(c, needs) {
   }
 
   const kind = CONSUMABLE_FORM.test(main) && !KIT_FORM.test(main) ? -2 : KIT_FORM.test(main) ? 2 : INSTRUMENT_FORM.test(main) ? 1 : 0;
-  const instrument = INSTRUMENT_FORM.test(main);
+  // shortcut: price stands in for "professional field-lab kit" (Kemio, Potatest, Metalyser are
+  // named "Kit"), so a £4,000 case never leads over a £20 strip; replace if the store tags them.
+  const instrument = INSTRUMENT_FORM.test(main) || c.price > PRO_KIT_PRICE;
 
   if (!hasParameters) {
     // Everything that must be true of a real, sellable test product has already been checked
@@ -263,15 +266,35 @@ export function selectProducts(candidates, needs) {
   // Simple kits and strips come first. A lab instrument is only offered when it adds a parameter
   // the simple ones cannot (e.g. dissolved oxygen for gasping fish), or when there are too few
   // simple options. Nothing is labelled "best" or ranked in any way the customer can see.
+  //
+  // What the customer actually asked about — an explicitly named parameter — takes strong
+  // priority over padding out to three picks with the rest of the default checklist. For
+  // "I need an iron test for well water", a product covering only coliform (a well-water
+  // default the customer never asked about) must not fill a second or third slot just because
+  // it adds checklist coverage no one requested: one strong, genuinely relevant product beats
+  // three weak ones. With no explicit parameter at all (e.g. "my pool water is cloudy", where
+  // everything offered comes from the default checklist), there is no such distinction to make,
+  // and every default parameter is as worth covering as any other, exactly as before.
+  const priorityIds = needs.explicit.length ? new Set([...needs.explicit, ...(needs.symptomParams ?? [])]) : null;
+
   const covered = new Set();
   const perVendor = new Map();
   const chosen = [];
   const gain = (p) => p.covered.filter((id) => !covered.has(id)).length;
+  const priorityGain = (p) => (priorityIds ? p.covered.filter((id) => priorityIds.has(id) && !covered.has(id)).length : gain(p));
   const pick = (list) => {
     const options = list.filter((p) => !chosen.includes(p) && (perVendor.get(p.vendor) ?? 0) < MAX_PER_VENDOR);
-    options.sort((a, b) => gain(b) - gain(a) || b.score - a.score || a.rank - b.rank);
+    // Equally relevant: the cheaper product first (a £20 lead test before a £191 one). Not for a
+    // name lookup or browse (no parameters), where the store's own search order is the relevance.
+    const byPrice = needs.parameters.length > 0;
+    options.sort((a, b) => priorityGain(b) - priorityGain(a) || gain(b) - gain(a) || b.score - a.score ||
+      (byPrice ? a.price - b.price : 0) || a.rank - b.rank);
     const best = options[0];
     if (!best) return null;
+    // Refuse a pick that adds nothing the customer actually asked about — after the first it
+    // would only fill a slot, and as the first it would be shown as a match when it is not
+    // (e.g. a nitrate/iron kit for "test my well for bacteria"); no pick means an honest no_match.
+    if (priorityIds && priorityGain(best) === 0) return null;
     chosen.push(best);
     perVendor.set(best.vendor, (perVendor.get(best.vendor) ?? 0) + 1);
     best.covered.forEach((id) => covered.add(id));

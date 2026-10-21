@@ -49,6 +49,14 @@ src = src.replace(
   (_, whenTrue, whenFalse) => (tw_floating ? whenTrue : whenFalse)
 );
 
+// 3b. The optional-logo if/else in the header (no logo configured in this mock, so always the
+// default water-drop mark — add a `logo` mock setting above and extend this to actually render
+// an <img> if the preview ever needs to exercise the logo-configured branch).
+src = src.replace(
+  /\{%-\s*if section\.settings\.logo != blank\s*-%\}([\s\S]*?)\{%-\s*else\s*-%\}([\s\S]*?)\{%-\s*endif\s*-%\}/,
+  (_, whenLogo, whenDefault) => (mock.settings.logo ? whenLogo : whenDefault)
+);
+
 // 4. The quick-reply block loop.
 src = src.replace(
   /\{%-\s*for block in section\.blocks\s*-%\}([\s\S]*?)\{%-\s*endfor\s*-%\}/,

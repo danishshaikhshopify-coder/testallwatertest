@@ -61,6 +61,9 @@
     #tw-assistant-{{ tw_id }} .tw-ai-icon{width:40px;height:40px;flex:0 0 40px;border-radius:50%;background:var(--tw-brand);position:relative}
     #tw-assistant-{{ tw_id }} .tw-ai-icon:before{content:"";position:absolute;top:50%;left:50%;width:13px;height:13px;background:#fff;border-radius:50% 50% 50% 0;transform:translate(-65%,-58%) rotate(-45deg);opacity:.95}
     #tw-assistant-{{ tw_id }} .tw-ai-icon:after{content:"";position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;background:#28a966;border:2px solid #fff;border-radius:50%}
+    #tw-assistant-{{ tw_id }} .tw-ai-icon-logo{background:var(--tw-surface);border:1px solid var(--tw-line);display:grid;place-items:center;overflow:hidden}
+    #tw-assistant-{{ tw_id }} .tw-ai-icon-logo:before{display:none}
+    #tw-assistant-{{ tw_id }} .tw-ai-icon-logo img{width:100%;height:100%;object-fit:contain;padding:5px;box-sizing:border-box}
     #tw-assistant-{{ tw_id }} .tw-brand-copy{min-width:0}
     #tw-assistant-{{ tw_id }} .tw-brand-copy strong{font-size:15px;font-weight:700;color:var(--tw-ink);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     #tw-assistant-{{ tw_id }} .tw-head-meta{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:12px;color:var(--tw-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -84,13 +87,14 @@
     #tw-assistant-{{ tw_id }} .tw-hero-text{margin:0;font-size:14px;line-height:1.6;color:var(--tw-muted);max-width:48ch}
 
     #tw-assistant-{{ tw_id }} .tw-quick{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:14px 20px 18px;background:var(--tw-surface);border-top:1px solid var(--tw-line)}
+    #tw-assistant-{{ tw_id }} .tw-quick.tw-hidden{display:none}
     #tw-assistant-{{ tw_id }} .tw-start-card{display:flex;align-items:center;gap:10px;text-align:left;padding:11px 12px;border:1px solid var(--tw-line);border-radius:10px;background:var(--tw-surface);color:var(--tw-ink);font-size:13px;font-weight:600;cursor:pointer;transition:border-color .15s ease,background .15s ease}
     #tw-assistant-{{ tw_id }} .tw-start-card:hover{border-color:var(--tw-brand);background:var(--tw-brand-soft)}
     #tw-assistant-{{ tw_id }} .tw-start-card:focus-visible{outline:2px solid var(--tw-brand);outline-offset:1px}
     #tw-assistant-{{ tw_id }} .tw-start-icon{width:26px;height:26px;flex:0 0 26px;border-radius:50%;background:var(--tw-brand-soft);position:relative}
     #tw-assistant-{{ tw_id }} .tw-start-icon:before{content:"";position:absolute;top:50%;left:50%;width:8px;height:8px;background:var(--tw-brand);border-radius:50% 50% 50% 0;transform:translate(-65%,-58%) rotate(-45deg)}
     #tw-assistant-{{ tw_id }} .tw-start-label{flex:1;min-width:0;line-height:1.35}
-    @media (max-width:420px){
+    @media (max-width:340px){
       #tw-assistant-{{ tw_id }} .tw-quick{grid-template-columns:1fr}
     }
 
@@ -194,7 +198,13 @@
       <div class="tw-card">
         <div class="tw-head">
           <div class="tw-brand">
-            <div class="tw-ai-icon" aria-hidden="true"></div>
+            {%- if section.settings.logo != blank -%}
+              <div class="tw-ai-icon tw-ai-icon-logo" aria-hidden="true">
+                <img src="{{ section.settings.logo | image_url: width: 80 }}" alt="" width="40" height="40" loading="lazy">
+              </div>
+            {%- else -%}
+              <div class="tw-ai-icon" aria-hidden="true"></div>
+            {%- endif -%}
             <div class="tw-brand-copy">
               <strong>{{ section.settings.heading | default: 'TestAllWater AI Assistant' | escape }}</strong>
               <div class="tw-head-meta">
@@ -551,6 +561,7 @@
 
   function ask(text) {
     if (!text || busy) return;
+    quickWrap.classList.add("tw-hidden"); // the starter suggestions give way to the real conversation
     addMessage("user", text);
     chatHistory.push({ role: "user", content: text });
     setBusy(true);
@@ -606,6 +617,7 @@
     shownProducts = {};
     messages.textContent = "";
     if (welcomeMessage) messages.appendChild(welcomeMessage);
+    quickWrap.classList.remove("tw-hidden"); // starter suggestions return on a fresh conversation
   }
   function startSuggestedIntent(text) {
     if (busy) return;
@@ -681,6 +693,12 @@
       "id": "heading",
       "label": "Heading",
       "default": "TestAllWater AI Assistant"
+    },
+    {
+      "type": "image_picker",
+      "id": "logo",
+      "label": "Header logo (optional)",
+      "info": "Replaces the default water-drop mark with your own logo image (shown at 40x40px, so a square or circular logo works best). Leave blank to use the default mark."
     },
     {
       "type": "text",

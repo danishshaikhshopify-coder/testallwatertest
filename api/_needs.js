@@ -21,16 +21,16 @@ export const PARAMS = [
   p("cyanuric_acid", "cyanuric acid (stabiliser)", /cyanuric|stabili[sz]er|\bcya\b/i),
   p("bromine", "bromine", /\bbromine\b/i),
   p("ammonia", "ammonia", /\bammonia\b|\bnh3\b|\bnh4\b/i),
-  p("nitrite", "nitrite", /\bnitrite\b|\bno2\b/i),
-  p("nitrate", "nitrate", /\bnitrate\b|\bno3\b/i),
-  p("phosphate", "phosphate", /\bphosphate\b|\bphosphorus\b/i),
+  p("nitrite", "nitrite", /\bnitrites?\b|\bno2\b/i),
+  p("nitrate", "nitrate", /\bnitrates?\b|\bno3\b/i),
+  p("phosphate", "phosphate", /\bphosphates?\b|\bphosphorus\b/i),
   p("iron", "iron", /\biron\b|\brust(?:y)?\b|orange (?:stain|water)/i, /\biron\b/i),
   p("copper", "copper", /\bcopper\b/i),
   p("dissolved_oxygen", "dissolved oxygen", /dissolved oxygen|\boxygen\b/i, /dissolved oxygen|\boxygen\b/i),
   p("salinity", "salinity", /salinity|specific gravity|refractometer|\bsalt level\b/i, /salinity|\bsalt\b|nacl|refractometer/i),
   p("tds", "TDS / conductivity", /\btds\b|total dissolved|conductivity/i, /\btds\b|conductivity/i),
   p("turbidity", "turbidity", /\bturbidity\b/i),
-  p("lead", "lead", /\blead\b(?!\s+(?:to|the|a|me|you|us|time))/i, /\blead\b/i),
+  p("lead", "lead", /\blead\b(?!\s+(?:to|the|a|me|you|us|time)\b)/i, /\blead\b/i),
   p("arsenic", "arsenic", /\barsenic\b/i),
   p("fluoride", "fluoride", /\bfluorid(?:e|ation)\b/i),
   p("chloride", "chloride", /\bchloride\b/i),
@@ -148,7 +148,42 @@ const HAS_VALUE = /\b\d+(?:[.,]\d+)?\s*(?:ppm|mg\/?l|ppb|µg\/?l|ug\/?l|µs|us\/
 // than a product request — naming a parameter here must not, on its own, be read as wanting
 // products (see its two uses below). Anchored to the start of the message, not the whole
 // conversation, so it only ever describes the customer's LATEST turn.
-const EDUCATIONAL_QUESTION = /^\s*(?:what(?:'?s| is| does| are)\b|why(?: is| does| do| are)\b|how(?: does| do)\b|do i need to\b|should i\b|is it (?:important|necessary)\b|what'?s? the difference\b)/i;
+export const EDUCATIONAL_QUESTION = /^\s*(?:what(?:'?s| is| does| are)\b|why(?: is| does| do| are)\b|how(?: does| do| often| long)\b|when should\b|do i need to\b|should i\b|is it (?:important|necessary)\b|what'?s? the difference\b)/i;
+
+// Whether THIS message alone shows real buying intent or describes a problem — unlike
+// analyzeNeeds' productIntent/problem, which also fall back to state.goal and so stay true for
+// the rest of the conversation once goal is set once (e.g. by a bare "troubleshooting" answer),
+// this only ever looks at the current turn's own words. Used by chat.js to decide whether a
+// message with nothing else going for it yet (no water type, no parameter) — "Which product
+// should I buy?", "what test should I get", "water tastes weird" — still deserves the same
+// structured next question as one that does, rather than falling through to an unstructured
+// model reply, without that decision staying permanently true for every later turn too.
+// TESTWORD is deliberately excluded: it matches the bare word "testing" in passing ("I am
+// curious about water testing"), too weak a signal on its own to force the structured gate —
+// INTENT already covers the genuine buying-intent phrasings that happen to use "test"/"kit".
+export function hasImmediateProductOrProblemSignal(text) {
+  return INTENT.test(text) || PROBLEM.test(text);
+}
+
+// A follow-up question about the products already shown (e.g. "Which one would you recommend?",
+// "Does this test iron?", "Do you have something cheaper?") rather than a new search — answered
+// from state.lastProducts' real, already-on-screen facts (see chat.js), never a new catalog call.
+export const PRODUCT_FOLLOWUP_INTENT = /\bwhich (?:one|option|kit)\b|\bis (?:this|that|it) (?:one )?(?:good|suitable|right|enough)\b|\bdoes (?:this|that|it) (?:one )?(?:test|cover|include)\b|\bcheaper\b|\bmore expensive\b|\bmore (?:things|parameters|tests)\b|\bwhat'?s the difference\b|\bdifference between\b|\bcompare\b|\bwhich (?:would you|do you) recommend\b|\bbetter (?:one|option)\b|\b(?:is|are) (?:it|this|that|they|these) (?:in stock|available)\b/i;
+
+// Whether the latest message is a PURE follow-up about products already shown: the follow-up
+// phrasing above, with no new structured signal (a water type, a parameter, a brand/product
+// lookup, or a fresh browse request) that would mean a real new search is actually needed. Used
+// by chat.js to skip a redundant catalog search for a turn like "which one would you recommend?"
+// once products are already on screen — while still searching again the instant anything new is
+// actually said (e.g. "do you have one that also tests lead?" still names a new parameter).
+export function isPureProductFollowup(text) {
+  if (!PRODUCT_FOLLOWUP_INTENT.test(text)) return false;
+  if (CONTEXTS.some((c) => c.user.test(text))) return false;
+  if (PARAMS.some((p) => p.user.test(text))) return false;
+  if (SHOW_PRODUCTS_REQUEST.test(text)) return false;
+  if (BRAND_LOOKUP.test(text)) return false;
+  return true;
+}
 
 // An explicit request to skip ahead to products, or frustration with the questions. Once seen,
 // the readiness gate stops asking the "soft" fields (goal, scope, subtype/source) — and, for a
@@ -160,7 +195,7 @@ const EDUCATIONAL_QUESTION = /^\s*(?:what(?:'?s| is| does| are)\b|why(?: is| doe
 // "I just want to see your water testing products") rather than only the exact phrase, and
 // "what ... kits/tests/products do you sell/have/offer/carry" / "what do you have for/in ..."
 // cover the equally natural "asking, not telling" phrasing of the same browse request.
-const SHOW_PRODUCTS_REQUEST = /\bjust show me\b|\bshow me\b[^.!?\n]{0,40}\b(?:products|options|kits?|tests?|strips?|what you (?:have|sell|offer))\b|\bskip (?:the )?questions\b|\bskip ahead\b|\bno more questions\b|\bwant(?:s|ed)? to see\b[^.!?\n]{0,40}\b(?:products|options|tests|kits|what you (?:have|sell|offer))\b|\bcan you just (?:show|recommend)\b|\bjust (?:recommend|suggest) something\b|\benough questions\b|\bjust tell me what to (?:buy|get)\b|\bjust browsing\b|\bi(?:'m| am) just looking\b|\bwhat\b[^.!?\n]{0,30}\b(?:kits?|tests?|products?|strips?)\b[^.!?\n]{0,20}\bdo you (?:sell|have|offer|carry)\b|\bwhat do you have (?:for|in)\b/i;
+const SHOW_PRODUCTS_REQUEST = /\bjust show me\b|\bshow me\b[^.!?\n]{0,40}\b(?:products|options|kits?|tests?|testing|strips?|stuff|supplies|range|what you (?:have|sell|offer))\b|\bskip (?:the )?questions\b|\bskip ahead\b|\bno more questions\b|\bwant(?:s|ed)? to see\b[^.!?\n]{0,40}\b(?:products|options|tests|kits|what you (?:have|sell|offer))\b|\bcan you just (?:show|recommend)\b|\bjust (?:recommend|suggest)(?: me| us)? something\b|\benough questions\b|\bjust tell me what to (?:buy|get)\b|\bjust browsing\b|\bi(?:'m| am) just looking\b|\bwhat\b[^.!?\n]{0,30}\b(?:kits?|tests?|products?|strips?)\b[^.!?\n]{0,20}\bdo you (?:sell|have|offer|carry)\b|\bwhat do you have (?:for|in)\b/i;
 const FRUSTRATION = /\bstop asking(?: me)?\b|\btoo many questions\b|\bthis is taking (?:too long|forever)\b|\bi(?:'m| am) frustrat\w*\b|\bannoy(?:ed|ing)\b|\bjust answer\b|\bi don'?t want to answer (?:more|any more) questions\b/i;
 const RELAXED_READINESS_TRIGGER = new RegExp(`${SHOW_PRODUCTS_REQUEST.source}|${FRUSTRATION.source}`, "i");
 
@@ -242,6 +277,13 @@ function resetWaterSpecificState(state, waterType) {
   state.issue = null;
   state.issueDetails = [];
   state.issues = [];
+  // Same for parameters (pool chlorine must not become an aquarium "known fact"); any named in
+  // the switching message itself are added back right after this by the caller.
+  state.parameters = [];
+  // Products shown for the previous kind of water are no longer relevant once the topic has
+  // genuinely moved on — a "does this test X" follow-up after a real topic change must not be
+  // answered from stale, now-irrelevant product data.
+  state.lastProducts = [];
 }
 
 function answerToPendingSwitch(text, candidate) {
@@ -276,6 +318,22 @@ export function deriveConversationState(conversation, previousState = null) {
     // never carried forward from a stale earlier turn — a specific product lookup should only
     // drive this turn's search, not keep the conversation "stuck" searching for it later.
     productQuery: typeof previousState?.productQuery === "string" ? previousState.productQuery : null,
+    // A compact, privacy-safe summary of the products last shown (see chat.js), so a follow-up
+    // question ("is this one good for my well?", "do you have something cheaper?") can be
+    // answered from the same real facts already on the customer's own screen — never a name or
+    // URL the model could mangle, only what the cards themselves already show: price, stock, and
+    // which parameters each one covers.
+    lastProducts: Array.isArray(previousState?.lastProducts)
+      ? previousState.lastProducts
+          .filter((p) => p && typeof p === "object")
+          .map((p) => ({
+            position: Number.isInteger(p.position) ? p.position : 0,
+            price: typeof p.price === "string" ? p.price : "",
+            available: p.available !== false,
+            covers: Array.isArray(p.covers) ? p.covers.filter((c) => typeof c === "string").slice(0, 8) : [],
+          }))
+          .slice(0, 3)
+      : [],
     issues: Array.isArray(previousState?.issues)
       ? unique(previousState.issues.filter((issue) => ISSUE_WORDS.includes(issue)))
       : [],
@@ -385,9 +443,10 @@ export function deriveConversationState(conversation, previousState = null) {
     if (state.waterType === "aquarium" && !state.waterSubtype) {
       const subtype = detectAquariumType(text);
       if (subtype && (requestedField === "waterType" || requestedField === "aquariumType" ||
-        /freshwater or saltwater/i.test(priorAssistant) || /\b(?:aquarium|fish tank|freshwater|fresh water|saltwater|salt water)\b/i.test(text))) {
+        /freshwater or saltwater/i.test(priorAssistant) || /\b(?:aquarium|fish tank|freshwater|fresh water|saltwater|salt water|marine|reef)\b/i.test(text))) {
         state.waterSubtype = subtype;
-      } else if (requestedField === "aquariumType" && /^\s*(?:not sure|unsure|no idea|i don't know)\s*[.!]?\s*$/i.test(text)) {
+      } else if (requestedField === "aquariumType") {
+        // "not sure", or a reply that ignores the question: ask once only, never again.
         state.waterSubtype = "unknown";
       }
     }
@@ -452,6 +511,8 @@ export function deriveConversationState(conversation, previousState = null) {
       TEST_SCOPE_CLARIFICATION.test(priorAssistant)) {
       if (/^\s*i\s+(?:have not|haven't)\s+tested(?: yet)?\s*[.!]?\s*$/i.test(text)) {
         state.testingScope = "not-tested";
+      } else if (state.testingScope === "not-tested" && newlyExplicit.length) {
+        state.testingScope = "specific"; // answers "which result would you like to check first?"
       } else if (SCOPE_COMPLETE.test(text) || /\b(?:complete|full)\b.{0,24}\b(?:test|check)\b|\bpH\s*\+\s*chlorine\b|\bchlorine\s*\+\s*pH\b/i.test(text)) {
         if (/\bpH\s*\+\s*chlorine\b|\bchlorine\s*\+\s*pH\b/i.test(text)) {
           state.parameters = unique([...state.parameters, "ph", "chlorine"]);
@@ -620,17 +681,14 @@ export function questionForMissingField(field, state) {
   return "";
 }
 
+// "pool", "hot tub", "well water": the words answerToPendingSwitch accepts after "yes".
+const switchName = (id) => ["well", "drinking"].includes(id) ? contextLabel(id) : contextLabel(id).replace(/ water$/, "");
+
 function clarifyWaterTypeSwitch(state) {
   const from = state.pendingWaterTypeSwitch?.from;
   const to = state.pendingWaterTypeSwitch?.to;
   if (!from || !to) return "";
-  const toLabel = contextLabel(to).replace(/ water$/, "");
-  const fromLabel = contextLabel(from).replace(/ water$/, "");
-  if (to === "aquarium" && from === "pool") {
-    return "It sounds like you're testing aquarium water instead. Should I switch from pool water to aquarium water?";
-  }
-  const article = /^[aeiou]/i.test(toLabel) ? "an" : "a";
-  return `It sounds like you're testing ${toLabel} instead. Should I switch from ${fromLabel} water to ${toLabel}?`;
+  return `It sounds like you're testing ${contextLabel(to)} instead. Should I switch from ${contextLabel(from)} to ${contextLabel(to)}?`;
 }
 
 export function guidedOptionsForField(field, state) {
@@ -681,9 +739,11 @@ export function guidedOptionsForField(field, state) {
       { label: "Bromine", value: "bromine" },
     ];
   } else if (field === "waterTypeSwitch") {
+    const to = switchName(state.pendingWaterTypeSwitch?.to);
+    const from = switchName(state.pendingWaterTypeSwitch?.from);
     choices = [
-      { label: "Yes, aquarium", value: "yes aquarium" },
-      { label: "No, keep pool", value: "no keep pool" },
+      { label: `Yes, ${to}`, value: `yes ${to}` },
+      { label: `No, keep ${from}`, value: `no keep ${from}` },
     ];
   } else if (field === "goal") {
     choices = ["pool", "spa"].includes(state.waterType)
@@ -700,8 +760,8 @@ export function guidedOptionsForField(field, state) {
     ["goal", "testingScope"].includes(state.lastAnsweredField)) {
     choices = state.testingScope === "not-tested"
         ? [
-            ...(!state.parameters.includes("chlorine") ? [{ label: "I know my chlorine", value: "chlorine" }] : []),
-            ...(!state.parameters.includes("ph") ? [{ label: "I know my pH", value: "pH" }] : []),
+            ...(!state.parameters.includes("chlorine") ? [{ label: "Check chlorine", value: "chlorine" }] : []),
+            ...(!state.parameters.includes("ph") ? [{ label: "Check pH", value: "pH" }] : []),
             { label: "Full test", value: "complete pool water test" },
           ]
         : [
@@ -721,14 +781,16 @@ export function guidedResponse(state, readiness, latestUserMessage = "") {
   let reply = state.pendingWaterTypeSwitch
     ? clarifyWaterTypeSwitch(state)
     : questionForMissingField(field, state);
-  const uncertain = /^\s*(?:no|not sure|unsure|maybe|no idea|i don't know)\s*[.!]?\s*$/i.test(latestUserMessage);
+  const uncertain = /^\s*(?:yes|no|not sure|unsure|maybe|no idea|i don't know)\s*[.!]?\s*$/i.test(latestUserMessage);
   if (field === "waterType" && state.lastAskedField === "waterType" && !detectContext(latestUserMessage)) {
     reply = state.waterTypeClarificationCount <= 1
       ? "No problem — we can narrow it down another way. Where is the water from?"
       : "That's okay. Which setting is closest, or where is the water from?";
   } else if (field === "waterTypeSwitch" && state.lastAskedField === "waterTypeSwitch" &&
     new RegExp(`^\\s*${state.pendingWaterTypeSwitch?.to}\\s*[.!]?\\s*$`, "i").test(latestUserMessage)) {
-    reply = "I’ll keep your pool as-is for now. Choose “Yes, aquarium” to switch, or “No, keep pool” to continue.";
+    const to = switchName(state.pendingWaterTypeSwitch.to);
+    const from = switchName(state.pendingWaterTypeSwitch.from);
+    reply = `I’ll keep your ${from} as-is for now. Choose “Yes, ${to}” to switch, or “No, keep ${from}” to continue.`;
   } else if (field === "testingScope" && state.treatment && /^\s*(?:bromine|chlorine|salt\s*water|saltwater)\s*[.!]?\s*$/i.test(latestUserMessage)) {
     reply = `Thanks — ${state.treatment} noted. What would you like to test?`;
   } else if (uncertain && field === "testingScope" && ["pool", "spa"].includes(state.waterType)) {
@@ -737,6 +799,10 @@ export function guidedResponse(state, readiness, latestUserMessage = "") {
     reply = "No problem. We can start with a general screen, or focus on a particular concern. Which would help?";
   } else if (uncertain && field === "treatment") {
     reply = "No problem — we can still narrow down the useful tests. What would you like to check?";
+  } else if (uncertain && field === "goal") {
+    reply = ["pool", "spa"].includes(state.waterType)
+      ? "No problem. Are you doing routine testing, or troubleshooting an issue?"
+      : "No problem — are you checking something specific, or would a general screen work?";
   }
   if (reply && reply === state._lastAssistantReply) {
     const isPool = ["pool", "spa"].includes(state.waterType);
@@ -865,7 +931,14 @@ export function constrainQuestionToState(reply, readiness) {
     /what are you (?:hoping|trying|looking) to (?:check|test|solve)|what do you want to (?:check|test)|what issue are you/i.test(reply);
   const asksKnownScope = Boolean(known.testingScope && known.testingScope !== "specific-pending") &&
     /recently tested|complete check|full check|routine (?:test|check)|testing scope/i.test(reply);
-  const asksKnownParameter = known.parameters.some((id) => {
+  // Merely mentioning a known parameter's name is not the same as asking for it again — a
+  // reply explaining what pH means legitimately says "pH" several times without being a
+  // redundant question. Only flagged when the reply also sounds like it is asking FOR that
+  // value (found via a "What does pH mean?" educational reply that happened to contain a "?"
+  // and the word "pH", getting its real explanation replaced with the waterType fallback
+  // question even though nothing had actually been asked about yet).
+  const ASKS_FOR_PARAMETER_VALUE = /\bdo you know your\b|\bwhat is your\b|\bwhat'?s your\b|\bhave you (?:tested|measured|checked)\b|\byour (?:current|latest|recent)\b/i;
+  const asksKnownParameter = ASKS_FOR_PARAMETER_VALUE.test(reply) && known.parameters.some((id) => {
     const pattern = PARAM_BY_ID[id]?.user;
     return pattern?.test(reply);
   });
@@ -883,7 +956,19 @@ export function constrainQuestionToState(reply, readiness) {
     !asksKnownWaterSource
   ) return reply;
   if (readiness.nextMissingField !== "ready") return questionForMissingField(readiness.nextMissingField, known);
-  return "I have the water type, treatment, testing scope and parameters you shared noted, so I’ll focus on the tests relevant to those details.";
+  // Built from what is actually known, never a fixed list — this previously always claimed
+  // "water type, treatment, testing scope and parameters" were noted even when, e.g., a
+  // parameter-only request (PFAS, a named product, a browse request) left water type and
+  // treatment genuinely unknown, which read as an odd non-sequitur in exactly those cases.
+  const knownFacts = [];
+  if (known.waterType) knownFacts.push("water type");
+  if (known.treatment) knownFacts.push("treatment");
+  if (known.testingScope && known.testingScope !== "specific-pending") knownFacts.push("testing scope");
+  if (known.parameters.length) knownFacts.push("parameters");
+  if (!knownFacts.length) return "I'll focus on what's genuinely relevant to what you've asked about.";
+  const list = knownFacts.length < 2 ? knownFacts.join("")
+    : `${knownFacts.slice(0, -1).join(", ")} and ${knownFacts.at(-1)}`;
+  return `I have the ${list} you shared noted, so I’ll focus on the tests relevant to those details.`;
 }
 
 export const parameterLabels = (ids) => ids.map((id) => PARAM_BY_ID[id]?.label).filter(Boolean);

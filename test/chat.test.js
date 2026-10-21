@@ -1600,11 +1600,13 @@ test("a message resent after a failure (no AI reply in between) is sent once and
 
 test("a different message after a failed one keeps the failed message as context", async () => {
   mockUpstream(ok("Sure, happy to help."));
-  await call({ body: { messages: [u(MSG), u("It has been green for 3 days")] } });
+  // Deliberately neutral wording (not itself describing a problem/parameter) — this test is
+  // about message-merging, not the readiness gate's own routing.
+  await call({ body: { messages: [u(MSG), u("It has been that way for 3 days now")] } });
   // Anthropic requires alternating roles, so the two consecutive user turns are merged
   // into one message; both texts still reach the model.
   assert.equal(sentRoles(), "u");
-  assert.equal(upstreamCalls[0].body.messages[0].content, `${MSG}\nIt has been green for 3 days`);
+  assert.equal(upstreamCalls[0].body.messages[0].content, `${MSG}\nIt has been that way for 3 days now`);
 });
 
 test("timeout recovery: after a double timeout the next request succeeds normally", async () => {

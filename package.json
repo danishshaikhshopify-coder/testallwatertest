@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "node server.js",
-    "test": "node --test test/chat.test.js test/ui.test.js test/shop.test.js test/retrieval.test.js test/knowledge.test.js test/conversation.test.js test/telemetry.test.js test/qa-regressions.test.js test/shopify-section.test.js test/product-discovery.test.js"
+    "test": "node --test test/chat.test.js test/ui.test.js test/shop.test.js test/retrieval.test.js test/knowledge.test.js test/conversation.test.js test/telemetry.test.js test/qa-regressions.test.js test/shopify-section.test.js test/product-discovery.test.js test/conversation-quality.test.js"
   },
   "dependencies": {
     "dotenv": "^18.0.4",

@@ -636,9 +636,12 @@ test("page: model follow-up cannot repeat a known aquarium subtype question", as
 
   const [, first, , second, , third, , fourth] = page.rows();
   assert.equal(textOf(first.bubble), "Is it freshwater or saltwater?");
+  // Only water type is actually known at this point (aquarium has no treatment/testing-scope
+  // concept, and no parameter has been explicitly named yet) — the fallback sentence is built
+  // from what's actually known, not a fixed claim about fields that are still empty.
   assert.equal(
     second.bubble.children.map(toHtml).join(""),
-    "<p>I have the water type, treatment, testing scope and parameters you shared noted, so I’ll focus on the tests relevant to those details.</p>"
+    "<p>I have the water type you shared noted, so I’ll focus on the tests relevant to those details.</p>"
   );
   assert.equal(
     third.bubble.children.map(toHtml).join(""),
@@ -705,11 +708,13 @@ test("timeout recovery: after both retries fail the user sees a clean message, a
   assert.ok(page.consoleErrors.length > 0, "technical detail still goes to the console");
 
   // A different follow-up continues the conversation and keeps the earlier message as context.
-  await page.send("It has been green for 3 days");
+  // (Deliberately worded to not itself describe a problem/parameter — this test is about
+  // timeout-retry context merging, not the readiness gate's own routing.)
+  await page.send("It has been that way for 3 days now");
   const sent = upstream.calls[2].body.messages;
   // Anthropic requires alternating roles, so the two consecutive user turns are merged.
   assert.deepEqual(sent.map((m) => m.role), ["user"]);
-  assert.equal(sent[0].content, "first question here\nIt has been green for 3 days");
+  assert.equal(sent[0].content, "first question here\nIt has been that way for 3 days now");
   assert.doesNotMatch(JSON.stringify(sent), /took longer|conversation is still here/);
 
   rows = page.rows();
@@ -757,7 +762,9 @@ test("timeout recovery: if the browser's own 40s limit fires, same friendly mess
   assert.ok(page.isIdle());
 
   hang = false;
-  await page.send("hello again, still cloudy");
+  // Deliberately neutral wording (not itself describing a problem/parameter) — this test is
+  // about the 40s client-side abort/retry path, not the readiness gate's own routing.
+  await page.send("hello again, checking in");
   assert.equal(textOf(page.rows().at(-1).bubble), "Back online");
 });
 

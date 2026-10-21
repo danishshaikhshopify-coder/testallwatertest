@@ -7,6 +7,10 @@ import {
   guidedResponse,
   getNextMissingField,
   parameterLabels,
+  isPureProductFollowup,
+  hasImmediateProductOrProblemSignal,
+  EDUCATIONAL_QUESTION,
+  PARAM_BY_ID,
 } from "./_needs.js";
 import { findProducts } from "./_catalog.js";
 import { guardReply } from "./_guard.js";
@@ -95,13 +99,29 @@ yourself. When the note says products were found, the app shows them as product 
 your reply: do not repeat their names or prices, refer to them as "the options below", and say
 in plain words which parameters they cover. When the note says no product was found, say
 clearly that no matching product was found in the TestAllWater catalog and continue helping
-with advice. Without a note, recommend test types and parameters only.
+with advice. Without a note, recommend test types and parameters only. If a related but
+imperfect option is offered instead of an exact match, say plainly that it's the closest
+alternative rather than describing it as if it were exactly what was asked for.
 If the customer gives test results, say briefly whether each value looks low, normal or high
 for that kind of water, and which further test is worth doing.
+A "PRODUCT FOLLOW-UP" note may be added when the customer is asking about the products already
+shown (which one to pick, whether one covers something, price comparisons). Answer only from
+the facts it lists (by position: "the first option", "the second option"); if something is
+asked that isn't in that note, say you don't have that detail rather than guessing.
 
 STYLE:
 Be concise, friendly, knowledgeable and practical. Avoid long lectures.
-Use short paragraphs or bullets when useful.
+- Normally 2-4 short sentences, or a short paragraph plus a short list when a few distinct
+  items genuinely need naming — never a wall of text, and never more than one short list.
+- Use Markdown naturally: **bold** a genuinely key term or the headline recommendation, not
+  every sentence; a short bullet list only when comparing or naming several items; never pile up
+  headings for a reply this short.
+- Say the recommendation plainly, then briefly why — do not bury it in a long explanation.
+- Never repeat a disclaimer, a safety note, or an explanation you already gave earlier in this
+  conversation; say it once, then refer back to it briefly if it comes up again.
+- Never use filler or generic AI phrasing — none of: "As an AI...", "I'd be happy to...",
+  "Based on your request/message...", "Please provide the following information...", "Certainly!",
+  "I understand that...". Just answer, the way a knowledgeable person would.
 `.trim();
 
 function parseBody(req) {
@@ -493,6 +513,13 @@ function noMatchTopic(needs) {
   return needs.productQuery || needs.label || parameterLabels(needs.parameters).slice(0, NO_MATCH_TOPIC_MAX).join(", ") || "what the customer asked for";
 }
 
+// What the customer named that none of the shown products covers (e.g. radon asked after a lead
+// test is already shown), as labels — or "" when every named parameter is covered.
+function uncoveredExplicit(needs, catalog) {
+  const shown = new Set(catalog.products.flatMap((p) => p.covers));
+  return parameterLabels(needs.explicit).filter((label) => !shown.has(label)).join(", ");
+}
+
 function productContext(needs, catalog) {
   const topics = parameterLabels(needs.parameters).join(", ");
   if (catalog.status === "ok") {
@@ -502,7 +529,7 @@ function productContext(needs, catalog) {
     // A product/brand lookup or a plain browse request covers no specific parameter (covers is
     // empty) — the model is told that plainly instead of being handed an empty list to describe.
     let note = covers
-      ? `PRODUCT CONTEXT: The app is showing ${n} real TestAllWater product${n === 1 ? "" : "s"} as product cards under your reply, listed for: ${covers}. Tests relevant to this conversation: ${topics}.`
+      ? `PRODUCT CONTEXT: The app is showing ${n} real TestAllWater product${n === 1 ? "" : "s"} as product cards under your reply, listed for: ${covers}. Tests relevant to this conversation: ${topics}. The customer ${needs.explicit.length ? `asked only about ${parameterLabels(needs.explicit).join(", ")}` : "did not name a specific test"}; the rest are the usual checks for this kind of water — never say the customer mentioned them.`
       : `PRODUCT CONTEXT: The app is showing ${n} real TestAllWater product${n === 1 ? "" : "s"} as product cards under your reply, matching ${needs.productQuery ? `the product the customer asked about` : "what the customer wants to browse"}.`;
     note += primary.covers.length
       ? ` Recommend clearly: the first one (covering ${primary.covers.join(", ")}) is the best fit for what the customer described. Connect their problem to why these parameters matter, then present it as your main recommendation. Call it "the option below" (or "the first option" if more than one is shown) — never name, price or link it yourself.`
@@ -515,6 +542,8 @@ function productContext(needs, catalog) {
     } else {
       note += " There is nothing else to add beyond this one unless the customer asks for more.";
     }
+    const missing = uncoveredExplicit(needs, catalog);
+    if (missing) note += ` No product in the TestAllWater catalog covers: ${missing}. Say plainly that no matching product was found for ${missing}; do not suggest the options shown are for it.`;
     return note;
   }
   if (catalog.status === "no_match") {
@@ -524,6 +553,21 @@ function productContext(needs, catalog) {
     return `PRODUCT CONTEXT: The product catalog could not be checked right now. Do not name or suggest any specific product; tell the customer you can't show product options at the moment, and carry on explaining which tests are relevant (${topics}).`;
   }
   return "";
+}
+
+// A follow-up about products already on the customer's screen ("which one would you
+// recommend?", "does this test iron?", "do you have something cheaper?") — answered only from
+// the same real facts those cards already show (price, stock, covered parameters), referred to
+// by position exactly as productContext's own "the first option" convention does, never by a
+// name the model might get wrong.
+function productFollowupContext(state) {
+  const lines = state.lastProducts.map((p, i) => {
+    const ordinal = ["first", "second", "third"][i] ?? `option ${i + 1}`;
+    const covers = p.covers.length ? p.covers.join(", ") : "no listed parameters on record";
+    const stock = p.available ? "in stock" : "currently out of stock";
+    return `- The ${ordinal} option: covers ${covers}; ${p.price || "price shown on its card"}; ${stock}.`;
+  });
+  return `PRODUCT FOLLOW-UP: The customer is asking about the product(s) already shown earlier in the chat (they are above your reply, so never say "below"), listed here by position (the same "first option"/"second option" ordering already used). Answer ONLY from these real facts — never invent a capability, price, or comparison point not listed here. If the customer asks for something not covered by this information (e.g. an exact spec not listed), say you don't have that detail rather than guessing.\n${lines.join("\n")}`;
 }
 
 const SAYS_NO_MATCH = /\bno (?:matching|suitable|relevant)\b[^.\n]{0,60}\b(?:product|kit|test)s?\b|\bno (?:product|kit|test)s?\b.{0,40}\b(?:found|available|listed)\b|couldn.?t find (?:a |any )?(?:matching |suitable )?(?:product|kit)|(?:don.?t|do not|doesn.?t|does not) (?:currently )?(?:have|list|stock|sell|carry)/i;
@@ -542,6 +586,10 @@ function finalizeReply(reply, needs, catalog, meta) {
   }
   if (catalog.status === "no_match" && !SAYS_NO_MATCH.test(text)) {
     text += `\n\n**No matching product found:** the TestAllWater catalog doesn't currently list a product for ${noMatchTopic(needs)}.`;
+  }
+  const missing = catalog.status === "ok" && !catalog.products.some((p) => !p.covers.length) ? uncoveredExplicit(needs, catalog) : "";
+  if (missing && !SAYS_NO_MATCH.test(text)) {
+    text += `\n\n**No matching product found:** the TestAllWater catalog doesn't currently list a product for ${missing}.`;
   }
   if (catalog.status === "unavailable" && !SAYS_UNAVAILABLE.test(text)) {
     text += "\n\n**Product options unavailable:** I couldn't check the TestAllWater catalog just now, so I can't show products at the moment. Please try again shortly.";
@@ -619,7 +667,20 @@ export default async function handler(req, res) {
     ? incomingState.conversationId
     : randomUUID();
 
-  if (!readiness.ready && (needs.wantsProducts || state.waterType || state.pendingWaterTypeSwitch || state.relaxedReadiness)) {
+  // Entering the deterministic gate (vs. a raw, unstructured model reply) whenever there is
+  // already SOME signal worth acting on: wanting products, a known water type, a pending
+  // switch, having relaxed the gate, or THIS message's own buying intent or described problem,
+  // even with nothing else yet named ("Which product should I buy?", "water tastes weird") —
+  // checked against the latest message alone (hasImmediateProductOrProblemSignal), not the
+  // sticky needs.productIntent/needs.problem, which would otherwise stay true for the rest of
+  // the conversation the moment any earlier turn set state.goal.
+  // A plain question ("how often should I test my hot tub?") is answered by the model, which is
+  // still told the next missing field; a question describing a problem still gets the gate.
+  const latestText = userMessages.at(-1) ?? "";
+  const educational = EDUCATIONAL_QUESTION.test(latestText) && !hasImmediateProductOrProblemSignal(latestText) &&
+    !state.pendingWaterTypeSwitch;
+  if (!readiness.ready && !educational && (needs.wantsProducts || state.waterType || state.pendingWaterTypeSwitch ||
+    state.relaxedReadiness || hasImmediateProductOrProblemSignal(latestText))) {
     const guided = guidedResponse(state, readiness, userMessages.at(-1) ?? "");
     state.lastAskedField = guided.field;
     state.lastAskedOptions = guided.options;
@@ -648,10 +709,37 @@ export default async function handler(req, res) {
     });
   }
 
+  // A follow-up about the products already shown ("which one would you recommend?", "does this
+  // test iron?", "do you have something cheaper?") — answered from the real facts already on
+  // those cards (price, stock, covered parameters), never a new search or a new name/figure.
+  // Checked first so it can also skip a redundant catalog search: the sticky state that keeps
+  // readiness "ready" (e.g. an explicit parameter named earlier) would otherwise make every
+  // later turn re-search for the same products all over again.
+  const latestMessage = userMessages.at(-1) ?? "";
+  const productFollowup = state.lastProducts.length > 0 && isPureProductFollowup(latestMessage);
+
   // Product matching is allowed only after the deterministic readiness gate is satisfied.
-  const catalog = repeated || !needs.wantsProducts || !readiness.ready
+  const catalog = repeated || !needs.wantsProducts || !readiness.ready || productFollowup || educational
     ? { status: "skipped", products: [], meta: {} }
     : await findProducts(needs);
+
+  // A rare parameter the store has no product for (radon, PFAS) has now been answered; keep it
+  // out of later searches, or every following turn repeats the same "no matching product".
+  if (catalog.status === "ok" || catalog.status === "no_match") {
+    const shown = new Set(catalog.products.flatMap((p) => p.covers));
+    state.parameters = state.parameters.filter((id) => !PARAM_BY_ID[id]?.rare || shown.has(PARAM_BY_ID[id].label));
+  }
+
+  if (catalog.status === "ok") {
+    state.lastProducts = catalog.products.slice(0, 3).map((p, i) => ({
+      position: i + 1,
+      price: p.price?.display ?? "",
+      available: p.available !== false,
+      covers: p.covers ?? [],
+    }));
+  } else if (catalog.status === "no_match") {
+    state.lastProducts = []; // the topic moved on; older cards must not answer a follow-up
+  }
 
   // The notes go into the single system prompt (the Anthropic API takes it as a separate
   // top-level field, not as a message in the conversation).
@@ -663,6 +751,7 @@ export default async function handler(req, res) {
     state.relaxedReadiness ? RELAXED_READINESS_NOTE : "",
     knowledgeContext(state, needs),
     productContext(needs, catalog),
+    productFollowup ? productFollowupContext(state) : "",
   ]
     .filter(Boolean)
     .join("\n\n");

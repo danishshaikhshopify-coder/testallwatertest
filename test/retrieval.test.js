@@ -102,12 +102,15 @@ test("retrieval: a genuinely complementary product is offered, and ranks ahead o
   assert.ok(chosen.some((p) => p.handle === "primary"));
   assert.ok(chosen.some((p) => p.handle === "alkalinity"), "the alkalinity kit adds real, needed coverage and should be offered alongside the primary pick");
 
-  // A near-duplicate that adds nothing new is still outranked by the genuinely complementary
-  // pick when a choice has to be made (selectProducts fills remaining coverage gains first).
+  // A near-duplicate that adds nothing new is excluded entirely once the customer's explicitly
+  // requested parameters (chlorine, pH, alkalinity) are already covered — a slot is never padded
+  // with a product that adds nothing actually asked about (see selectProducts' priorityIds: "one
+  // strong product is better than three weak ones").
   const uselessDuplicate = candidate({ handle: "dup2", title: "Pool Chlorine pH Test Strips Mini", vendor: "Third", price: 5.99 });
   const withFiller = selectProducts([primary, genuinelyComplementary, uselessDuplicate], needs);
-  assert.ok(withFiller.findIndex((p) => p.handle === "alkalinity") < withFiller.findIndex((p) => p.handle === "dup2"),
-    "the product that adds real coverage is prioritized over one that does not");
+  assert.ok(withFiller.some((p) => p.handle === "alkalinity"), "the genuinely complementary pick is still offered");
+  assert.equal(withFiller.filter((p) => ["primary", "dup2"].includes(p.handle)).length, 1, "a near-duplicate that adds nothing new is not padded in just to fill a third slot");
+  assert.ok(withFiller.some((p) => p.handle === "dup2"), "of two equally relevant strips, the cheaper one is offered");
 });
 
 test("retrieval: unavailable, accessory, chemical and expired listings are excluded regardless of catalog size", () => {

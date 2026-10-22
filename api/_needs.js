@@ -139,6 +139,19 @@ const SYMPTOMS = [
   { re: /marine|reef|saltwater|salt water|\bcoral\b/i, adds: ["salinity"], contexts: ["aquarium"] },
 ];
 
+// The parameters a symptom alone implies (e.g. "tastes metallic" -> iron/copper/lead),
+// independent of whether the customer named any of them explicitly. Shared by analyzeNeeds (the
+// full candidate list driving search) and deriveConversationState (to tell a single-cause
+// symptom apart from one with several plausible causes — see the "symptom-pending" testingScope
+// below), so the two can never drift apart on what counts as ambiguous.
+function matchedSymptomParams(text, context) {
+  const adds = [];
+  for (const symptom of SYMPTOMS) {
+    if (symptom.re.test(text) && (!context || symptom.contexts.includes(context))) adds.push(...symptom.adds);
+  }
+  return unique(adds);
+}
+
 const DESCRIPTORS = /\b(cloudy|green|murky|foamy|foaming|discoloured|discolored|smelly|cloudiness)\b/i;
 const PROBLEM = /cloudy|green|murky|foam|smell|odou?r|taste|stain|dirty|algae|itch|irritat|burn|sick|\bill\b|dying|dead|gasping|safe|contaminat|unsafe|problem|issue|wrong|weird|strange|rust|orange|brown|metallic|hard water|scale/i;
 const TESTWORD = /\btest(?:s|ing|ed|er|ers)?\b|\bkit\b|\bstrips?\b|\bmeter\b|\bphotometer\b|\bchecker\b/i;
@@ -149,6 +162,13 @@ const HAS_VALUE = /\b\d+(?:[.,]\d+)?\s*(?:ppm|mg\/?l|ppb|µg\/?l|ug\/?l|µs|us\/
 // products (see its two uses below). Anchored to the start of the message, not the whole
 // conversation, so it only ever describes the customer's LATEST turn.
 export const EDUCATIONAL_QUESTION = /^\s*(?:what(?:'?s| is| does| are)\b|why(?: is| does| do| are)\b|how(?: does| do| often| long)\b|when should\b|do i need to\b|should i\b|is it (?:important|necessary)\b|what'?s? the difference\b)/i;
+
+// A question asking whether a named thing might be the CAUSE of a symptom ("could it be iron?",
+// "is it maybe lead?") is not the same as asking to test for it. Naming a parameter here must
+// not, on its own, count as an explicit request — unlike a bare mention backed by real
+// buying/testing language (INTENT/TESTWORD) — or it would silently skip the ambiguous-symptom
+// clarification below and assume a test the customer never actually asked for.
+const CAUSE_QUESTION = /\b(?:could|might|can|may) (?:it|that|this) be\b|\bis (?:it|that|this)(?: maybe| possibly)?\b[^.!?\n]{0,15}\?|\bdo you think (?:it'?s|it is|that'?s)\b/i;
 
 // Whether THIS message alone shows real buying intent or describes a problem — unlike
 // analyzeNeeds' productIntent/problem, which also fall back to state.goal and so stay true for
@@ -277,6 +297,7 @@ function resetWaterSpecificState(state, waterType) {
   state.issue = null;
   state.issueDetails = [];
   state.issues = [];
+  state.symptomCandidates = [];
   // Same for parameters (pool chlorine must not become an aquarium "known fact"); any named in
   // the switching message itself are added back right after this by the caller.
   state.parameters = [];
@@ -341,13 +362,20 @@ export function deriveConversationState(conversation, previousState = null) {
     issueDetails: Array.isArray(previousState?.issueDetails)
       ? unique(previousState.issueDetails.filter((detail) => typeof detail === "string"))
       : [],
+    // The candidate parameters an ambiguous well/drinking symptom implies (e.g. "tastes
+    // metallic" -> iron/copper/lead), held only while testingScope === "symptom-pending" so the
+    // follow-up question and its resolution (see deriveConversationState below) know what the
+    // customer is choosing between.
+    symptomCandidates: Array.isArray(previousState?.symptomCandidates)
+      ? unique(previousState.symptomCandidates.filter((id) => Object.hasOwn(PARAM_BY_ID, id)))
+      : [],
     goal: typeof previousState?.goal === "string" ? previousState.goal : null,
     waterSubtype: ["freshwater", "saltwater", "unknown"].includes(previousState?.waterSubtype ?? previousState?.aquariumType)
       ? (previousState.waterSubtype ?? previousState.aquariumType)
       : null,
     waterSource: typeof previousState?.waterSource === "string" ? previousState.waterSource : null,
     drinkingSource: typeof previousState?.drinkingSource === "string" ? previousState.drinkingSource : null,
-    testingScope: ["complete", "specific", "specific-pending", "not-tested", "general", "unknown"].includes(previousState?.testingScope)
+    testingScope: ["complete", "specific", "specific-pending", "not-tested", "general", "unknown", "symptom-pending"].includes(previousState?.testingScope)
       ? previousState.testingScope
       : null,
     lastAskedField: ["waterType", "goal", "treatment", "testingScope", "waterSource", "aquariumType", "waterTypeSwitch"].includes(previousState?.lastAskedField)
@@ -466,8 +494,14 @@ export function deriveConversationState(conversation, previousState = null) {
     const isTreatmentAnswer = (requestedField === "treatment" || POOL_TREATMENT_QUESTION.test(priorAssistant) ||
       (state.treatment && state.issue !== "green_water")) &&
       /^\s*(?:bromine|chlorine|salt\s*water|saltwater)\s*[.!]?\s*$/i.test(text);
+    // "Could it be iron?" names iron but is asking whether it might be the CAUSE, not asking to
+    // test for it — unless the message also carries real buying/testing language (INTENT/
+    // TESTWORD), a bare cause-question mention must not count as an explicit request, or it would
+    // silently skip the ambiguous-symptom clarification below.
+    const causeQuestionOnly = CAUSE_QUESTION.test(text) && !INTENT.test(text) && !TESTWORD.test(text);
     const newlyExplicit = PARAMS.filter((parameter) => parameter.user.test(normalized) &&
-      !(isTreatmentAnswer && ["bromine", "chlorine"].includes(parameter.id))).map((parameter) => parameter.id);
+      !(isTreatmentAnswer && ["bromine", "chlorine"].includes(parameter.id)) &&
+      !causeQuestionOnly).map((parameter) => parameter.id);
 
     // A newly-named parameter with nothing to do with the kind of water already being discussed
     // (e.g. "Actually, do you sell nitrate tests?" mid pool-chlorine conversation), said with
@@ -510,7 +544,15 @@ export function deriveConversationState(conversation, previousState = null) {
 
     if (requestedField === "testingScope" || TEST_SCOPE_QUESTION.test(priorAssistant) ||
       TEST_SCOPE_CLARIFICATION.test(priorAssistant)) {
-      if (/^\s*i\s+(?:have not|haven't)\s+tested(?: yet)?\s*[.!]?\s*$/i.test(text)) {
+      if (state.testingScope === "symptom-pending") {
+        // Any answer resolves this — naming one of the candidates narrows to just that one;
+        // "not sure"/"check all"/anything else keeps the full candidate set. Either way this
+        // never asks a second time (see getNextMissingField/questionForMissingField below).
+        const named = state.symptomCandidates.filter((id) => PARAM_BY_ID[id].user.test(normalized));
+        state.parameters = unique([...state.parameters, ...(named.length ? named : state.symptomCandidates)]);
+        state.testingScope = "specific";
+        state.symptomCandidates = [];
+      } else if (/^\s*i\s+(?:have not|haven't)\s+tested(?: yet)?\s*[.!]?\s*$/i.test(text)) {
         state.testingScope = "not-tested";
       } else if (state.testingScope === "not-tested" && newlyExplicit.length) {
         state.testingScope = "specific"; // answers "which result would you like to check first?"
@@ -568,11 +610,25 @@ export function deriveConversationState(conversation, previousState = null) {
     // with the water type several turns later — the "unknown water type" regression tests pin
     // this). That flow is exempt here too, on purpose: it asks one genuinely richer follow-up
     // ("do you also know your pH?") instead of silently assuming only the one named parameter.
+    // A described problem with no parameter named only answers "what to check" when it points to
+    // a SINGLE likely cause ("orange staining" -> iron only). A symptom with several plausible
+    // causes ("tastes metallic" -> iron/copper/lead) must not be silently assumed to mean all of
+    // them — the customer is asked once which, or "not sure/check all" (testingScope =
+    // "symptom-pending"; resolved above, and the question itself lives in
+    // questionForMissingField/guidedOptionsForField below).
+    const implicitWellDrinkingProblem = ["drinking", "well"].includes(state.waterType) &&
+      state.goal === "troubleshooting" && !state.parameters.length;
+    const symptomCandidates = implicitWellDrinkingProblem ? matchedSymptomParams(text, state.waterType) : [];
     if (["pool", "spa", "drinking", "well"].includes(state.waterType) && !state.testingScope &&
-      (state.parameters.length || (["drinking", "well"].includes(state.waterType) && state.goal === "troubleshooting")) &&
+      (state.parameters.length || implicitWellDrinkingProblem) &&
       !(state.goal === "troubleshooting" &&
         ["green_water", "cloudy_water", "high_chlorine", "low_chlorine"].includes(state.issue))) {
-      state.testingScope = "specific";
+      if (implicitWellDrinkingProblem && symptomCandidates.length > 1) {
+        state.testingScope = "symptom-pending";
+        state.symptomCandidates = symptomCandidates;
+      } else {
+        state.testingScope = "specific";
+      }
     }
     if (!requestedField && /\b(?:complete|full)\b.{0,24}\b(?:test|check)\b/i.test(text)) {
       state.testingScope = "complete";
@@ -621,7 +677,7 @@ export function getNextMissingField(state) {
   if (state.waterType === "aquarium" && !state.waterSubtype) return "aquariumType";
   if ((state.waterType === "drinking" || state.waterType === "well") && !state.waterSource) return "waterSource";
   if (["pool", "spa", "drinking", "well"].includes(state.waterType) &&
-    (!state.testingScope || ["specific-pending", "not-tested"].includes(state.testingScope))) return "testingScope";
+    (!state.testingScope || ["specific-pending", "not-tested", "symptom-pending"].includes(state.testingScope))) return "testingScope";
   return "ready";
 }
 
@@ -664,6 +720,11 @@ export function questionForMissingField(field, state) {
       if (state.parameters.includes("chlorine")) return "Got it — you know your chlorine level. Do you also know your pH, or would you prefer a full test?";
       if (state.lastAnsweredField === "testingScope") return `To narrow down ${state.issueDetails.at(-1) ?? "the pool water issue"}, do you know either your chlorine or pH result?`;
       return troubleshootingIntro(state);
+    }
+    if (state.testingScope === "symptom-pending" && state.symptomCandidates.length) {
+      const labels = state.symptomCandidates.map((id) => PARAM_BY_ID[id].label);
+      const list = labels.length > 1 ? `${labels.slice(0, -1).join(", ")} or ${labels.at(-1)}` : labels[0];
+      return `That can point to a few different things — ${list}. Do you know which, or should we check them all?`;
     }
     if (state.waterType === "drinking" || state.waterType === "well") {
       return "Are you looking for a general screen, or checking a specific concern?";
@@ -711,6 +772,12 @@ export function guidedOptionsForField(field, state) {
     { label: "Private well", value: "well water" },
     { label: "Not sure", value: "not sure" },
   ];
+  else if (field === "testingScope" && state.testingScope === "symptom-pending") {
+    choices = [
+      ...state.symptomCandidates.map((id) => ({ label: `Just ${PARAM_BY_ID[id].label}`, value: id })),
+      { label: "Not sure, check all", value: "check all" },
+    ];
+  }
   else if (field === "testingScope" && (state.waterType === "pool" || state.waterType === "spa") &&
     !(state.goal === "troubleshooting" && ["green_water", "cloudy_water", "high_chlorine", "low_chlorine"].includes(state.issue) &&
       ["goal", "testingScope"].includes(state.lastAnsweredField))) {
@@ -773,6 +840,7 @@ export function guidedOptionsForField(field, state) {
           ];
   }
   const choiceLimit = field === "waterType" ? 5
+    : state.testingScope === "symptom-pending" ? state.symptomCandidates.length + 1
     : field === "testingScope" && state.goal === "troubleshooting" && state.issue ? 4 : 3;
   return [...choices.slice(0, choiceLimit), OTHER_OPTION];
 }
@@ -839,10 +907,7 @@ export function analyzeNeeds(messages, state = deriveConversationState(messages.
   const text = messages.filter((message) => typeof message === "string").join("\n");
   const context = state.waterType;
   const explicit = PARAMS.filter((parameter) => state.parameters.includes(parameter.id)).map((parameter) => parameter.id);
-  const symptomParams = [];
-  for (const symptom of SYMPTOMS) {
-    if (symptom.re.test(text) && (!context || symptom.contexts.includes(context))) symptomParams.push(...symptom.adds);
-  }
+  const symptomParams = matchedSymptomParams(text, context);
   const hasRare = explicit.some((id) => PARAM_BY_ID[id].rare);
   const parameters = unique([...explicit, ...symptomParams, ...(hasRare ? [] : (context ? DEFAULTS[context] ?? [] : []))]);
   const productIntent = INTENT.test(text) || TESTWORD.test(text) || Boolean(state.goal);
@@ -892,7 +957,7 @@ function determineRecommendationReadiness(messages, needs, conversation, state) 
     if (state.waterType === "aquarium" && !state.waterSubtype) missing.push("aquarium_type");
     if ((state.waterType === "drinking" || state.waterType === "well") && !state.waterSource) missing.push("water_source");
     if (["pool", "spa", "drinking", "well"].includes(state.waterType) &&
-      (!state.testingScope || ["specific-pending", "not-tested"].includes(state.testingScope))) missing.push("testing_scope");
+      (!state.testingScope || ["specific-pending", "not-tested", "symptom-pending"].includes(state.testingScope))) missing.push("testing_scope");
   }
 
   const question = state.pendingWaterTypeSwitch
@@ -911,7 +976,7 @@ function determineRecommendationReadiness(messages, needs, conversation, state) 
     poolTreatmentKnown: Boolean(state.treatment),
     aquariumTypeKnown: Boolean(state.waterSubtype),
     waterSourceKnown: Boolean(state.waterSource),
-    testingScopeKnown: Boolean(state.testingScope && !["specific-pending", "not-tested"].includes(state.testingScope)),
+    testingScopeKnown: Boolean(state.testingScope && !["specific-pending", "not-tested", "symptom-pending"].includes(state.testingScope)),
     relevantParameters: needs.parameters,
     existingTestInformation: needs.hasValues,
     relaxedReadiness: state.relaxedReadiness,
@@ -938,7 +1003,7 @@ export function constrainQuestionToState(reply, readiness) {
     /what kind of water|which (?:kind|type) of water|are we (?:talking about|testing)|is (?:this|it) (?:a |an )?(?:pool|aquarium|hot tub|tap water)/i.test(reply);
   const asksKnownGoal = Boolean(known.goal) &&
     /what are you (?:hoping|trying|looking) to (?:check|test|solve)|what do you want to (?:check|test)|what issue are you/i.test(reply);
-  const asksKnownScope = Boolean(known.testingScope && known.testingScope !== "specific-pending") &&
+  const asksKnownScope = Boolean(known.testingScope && !["specific-pending", "symptom-pending"].includes(known.testingScope)) &&
     /recently tested|complete check|full check|routine (?:test|check)|testing scope/i.test(reply);
   // Merely mentioning a known parameter's name is not the same as asking for it again — a
   // reply explaining what pH means legitimately says "pH" several times without being a
@@ -972,7 +1037,7 @@ export function constrainQuestionToState(reply, readiness) {
   const knownFacts = [];
   if (known.waterType) knownFacts.push("water type");
   if (known.treatment) knownFacts.push("treatment");
-  if (known.testingScope && known.testingScope !== "specific-pending") knownFacts.push("testing scope");
+  if (known.testingScope && !["specific-pending", "symptom-pending"].includes(known.testingScope)) knownFacts.push("testing scope");
   if (known.parameters.length) knownFacts.push("parameters");
   if (!knownFacts.length) return "I'll focus on what's genuinely relevant to what you've asked about.";
   const list = knownFacts.length < 2 ? knownFacts.join("")

@@ -113,11 +113,19 @@ test("product follow-up: a message naming a genuinely new parameter still search
 
 // --- Phase 2/3: ask only what improves the recommendation ----------------------------------
 
-test("accumulated context: private well + metallic taste in ONE message reaches readiness without asking water type again", async () => {
+test("accumulated context: private well + metallic taste in ONE message asks the narrowing question, not water type again", async () => {
+  // Metallic taste implies three plausible causes (iron/copper/lead) — an ambiguous symptom
+  // alone must not make the customer ready; it gets one narrowing question instead, but water
+  // type (already given in the same message) is never re-asked.
   const response = await call([{ role: "user", content: "I have a private well and my water tastes metallic." }]);
   assert.equal(response.payload.state.waterType, "well");
-  assert.equal(response.payload.ready, true);
-  assert.doesNotMatch(response.payload.reply, /what kind of water/i);
+  assert.equal(response.payload.ready, false, "an ambiguous symptom alone is not enough to recommend");
+  assert.doesNotMatch(response.payload.reply, /what kind of water/i, "water type is already known, never re-asked");
+  assert.match(response.payload.reply, /iron/i, "explains the plausible causes");
+  assert.match(response.payload.reply, /copper/i);
+  assert.match(response.payload.reply, /lead/i);
+  assert.ok(response.payload.options.length > 1, "offers narrowing options, including a not-sure path");
+  assert.ok(response.payload.options.some((o) => /not sure/i.test(o.label)), "a 'not sure / check all' option is offered");
 });
 
 test("explicit recommendation rule: 'Which product should I buy?' still gets the structured water-type question, not a raw model reply", async () => {
@@ -156,11 +164,20 @@ test("long accumulation: private well -> metallic taste -> 'I don't know my read
   let response = await sendTurn(conversation, "I have a private well.");
   const firstReply = response.payload.reply;
   response = await sendTurn(conversation, "The water tastes metallic.", response.payload.state);
-  assert.equal(response.payload.ready, true, "enough context after just two messages, no further interrogation");
+  // Ambiguous symptom (iron/copper/lead): one narrowing question, not yet ready — this is the
+  // ONE useful clarifying question the customer should see, not a form.
+  assert.equal(response.payload.ready, false, "an ambiguous symptom alone is not enough to recommend");
+  assert.match(response.payload.reply, /iron|copper|lead/i, "explains the plausible causes before asking");
+  const narrowingQuestion = response.payload.reply;
   response = await sendTurn(conversation, "I don't know my readings.", response.payload.state);
+  // Any answer resolves the narrowing question — "I don't know my readings" doesn't name a
+  // specific cause, so all three candidates are kept and the search proceeds.
+  assert.equal(response.payload.ready, true, "a non-specific answer still resolves readiness, not a second question");
   assert.notEqual(response.payload.reply, firstReply, "never falls back to repeating the very first question");
+  assert.notEqual(response.payload.reply, narrowingQuestion, "the narrowing question is not asked a second time");
+  assert.ok(response.payload.products?.length, "a real recommendation is given as soon as the symptom is resolved");
   response = await sendTurn(conversation, "Just recommend something.", response.payload.state);
-  assert.ok(response.payload.products?.length, "a real recommendation is eventually given");
+  assert.ok(response.payload.products?.length, "stays ready on a later turn too");
 });
 
 // --- Phase 9: topic change, including a second switch back -------------------------------
@@ -370,4 +387,118 @@ test("product note: the model is told which tests the customer actually named, s
   const world = installWorld({ store: createFakeStore(), llm: llmReply("This covers lead.") });
   await call([{ role: "user", content: "I need to test my tap water for lead" }]);
   assert.match(world.llmCalls.at(-1).body.system, /customer asked only about lead; .*never say the customer mentioned them/);
+});
+
+// --- Symptom-ambiguity readiness: a symptom with several plausible causes must not make the ----
+// --- customer recommendation-ready on its own (acceptance tests A-J from the readiness redesign)
+
+test("ambiguous symptom (A): 'My well water tastes metallic.' explains the possible causes and asks one narrowing question, no products", async () => {
+  installWorld({ store: createFakeStore(), llm: llmReply("unused") });
+  const response = await call([{ role: "user", content: "My well water tastes metallic." }]);
+  assert.equal(response.payload.ready, false);
+  assert.equal(response.payload.model, "readiness-gate");
+  assert.match(response.payload.reply, /iron/i);
+  assert.match(response.payload.reply, /copper/i);
+  assert.match(response.payload.reply, /lead/i);
+  assert.equal((response.payload.products ?? []).length, 0);
+  assert.equal(response.payload.state.testingScope, "symptom-pending");
+  assert.deepEqual(response.payload.state.symptomCandidates.slice().sort(), ["copper", "iron", "lead"]);
+});
+
+test("ambiguous symptom (B): 'Not sure, check all three.' resolves the narrowing question and allows the search", async () => {
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("Here is what covers all three.") });
+  const conversation = [];
+  let response = await sendTurn(conversation, "My well water tastes metallic.");
+  assert.equal(response.payload.ready, false);
+  response = await sendTurn(conversation, "Not sure, check all three.", response.payload.state);
+  assert.equal(response.payload.ready, true);
+  assert.equal(response.payload.state.testingScope, "specific");
+  assert.deepEqual(response.payload.state.parameters.slice().sort(), ["copper", "iron", "lead"]);
+  assert.ok(response.payload.products?.length, "a real recommendation follows the resolved symptom");
+});
+
+test("ambiguous symptom: naming one of the candidates directly narrows to just that one", async () => {
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("Iron it is.") });
+  const conversation = [];
+  let response = await sendTurn(conversation, "My well water tastes metallic.");
+  response = await sendTurn(conversation, "Iron.", response.payload.state);
+  assert.equal(response.payload.ready, true);
+  assert.deepEqual(response.payload.state.parameters, ["iron"]);
+});
+
+test("explicit requests (C, D): a named, unambiguous parameter still recommends immediately", async () => {
+  installWorld({ store: createFakeStore(), llm: llmReply("Here is an iron test.") });
+  const a = await call([{ role: "user", content: "I need an iron test for well water." }]);
+  assert.equal(a.payload.ready, true);
+  assert.ok(a.payload.products?.length);
+
+  const b = await call([{ role: "user", content: "Show me an iron test." }]);
+  assert.equal(b.payload.ready, true);
+  assert.ok(b.payload.products?.length);
+});
+
+test("single-candidate symptom (E): 'orange staining' implies iron only, so direct recommendation remains allowed", async () => {
+  installWorld({ store: createFakeStore(), llm: llmReply("This covers iron.") });
+  const response = await call([{ role: "user", content: "My well water has orange staining." }]);
+  assert.equal(response.payload.ready, true);
+  assert.deepEqual(response.payload.state.parameters, ["iron"]);
+  assert.ok(response.payload.products?.length);
+});
+
+test("an explicitly named parameter overrides an ambiguous symptom in the same message", async () => {
+  // "tastes metallic" alone implies iron/copper/lead (ambiguous), but the customer also named
+  // iron explicitly — principle 5 (explicit requests recommend immediately) wins.
+  installWorld({ store: createFakeStore(), llm: llmReply("Iron it is.") });
+  const response = await call([{ role: "user", content: "My well water tastes metallic and I want to check iron." }]);
+  assert.equal(response.payload.ready, true);
+  assert.deepEqual(response.payload.state.parameters, ["iron"]);
+});
+
+test("pool clarification (F): 'My pool is cloudy.' keeps its existing clarification behavior, untouched", async () => {
+  const response = await call([{ role: "user", content: "My pool is cloudy." }]);
+  assert.equal(response.payload.ready, false);
+  assert.match(response.payload.reply, /cloudy pool water/i);
+});
+
+test("educational (G): 'What does pH mean?' stays product-free", async () => {
+  installWorld({ store: createFakeStore(), llm: llmReply("pH measures acidity.") });
+  const response = await call([{ role: "user", content: "What does pH mean?" }]);
+  assert.equal((response.payload.products ?? []).length, 0);
+});
+
+test("browse (H): 'Show me your water testing products.' is unaffected by the ambiguity rule", async () => {
+  installWorld({ store: createFakeStore(), llm: llmReply("Here are some options.") });
+  const response = await call([{ role: "user", content: "Show me your water testing products." }]);
+  assert.equal(response.payload.ready, true);
+  assert.ok(response.payload.products?.length);
+});
+
+test("cause question (I): 'Could it be iron?' is not read as a request to test iron — it still gets the narrowing clarification", async () => {
+  installWorld({ store: createFakeStore(), llm: llmReply("unused") });
+  const response = await call([{ role: "user", content: "My well water tastes metallic. Could it be iron?" }]);
+  assert.equal(response.payload.ready, false, "asking whether iron could be the cause is not the same as asking to test for it");
+  assert.deepEqual(response.payload.state.parameters, [], "iron is not treated as explicitly requested");
+  assert.match(response.payload.reply, /iron/i, "the clarification still names iron as one of the possibilities");
+});
+
+test("cause question: genuine testing intent ('could I get an iron test?') still counts as explicit", async () => {
+  installWorld({ store: createFakeStore(), llm: llmReply("Here is an iron test.") });
+  const response = await call([{ role: "user", content: "My well water tastes metallic. Could I get an iron test?" }]);
+  assert.equal(response.payload.ready, true);
+  assert.deepEqual(response.payload.state.parameters, ["iron"]);
+});
+
+test("no repeated clarification loop (J): the narrowing question is never asked twice, even on a second non-answer", async () => {
+  const store = createFakeStore();
+  installWorld({ store, llm: llmReply("A sensible starting point.") });
+  const conversation = [];
+  let response = await sendTurn(conversation, "My well water tastes metallic.");
+  const firstQuestion = response.payload.reply;
+  response = await sendTurn(conversation, "I'm not sure.", response.payload.state);
+  // Any answer resolves symptom-pending in one step (see the resolution logic), so this must
+  // already be ready and must not repeat the same clarification.
+  assert.equal(response.payload.ready, true);
+  assert.notEqual(response.payload.reply, firstQuestion);
 });

@@ -40,6 +40,9 @@ function stateSnapshot(state) {
     uncertainStreak: state.uncertainStreak,
     relaxedReadiness: state.relaxedReadiness,
     pendingWaterTypeSwitch: state.pendingWaterTypeSwitch,
+    // accepted | rejected | undecided | null — drawn from the same small fixed vocabulary as
+    // every other field here, never free text (see recommendationStatus in api/_needs.js).
+    recommendationStatus: state.recommendationStatus,
   };
 }
 
@@ -57,6 +60,9 @@ export function classifySignals(event) {
   if (event.relaxedReadiness) signals.push("frustrated_or_skipped_ahead");
   if (state.pendingWaterTypeSwitch) signals.push("topic_switch_pending");
   if (event.rejectedKnownFieldQuestion) signals.push("model_ignored_known_state");
+  if (state.recommendationStatus === "rejected") signals.push("recommendation_rejected");
+  if (state.recommendationStatus === "accepted") signals.push("recommendation_accepted");
+  if (event.productFollowup) signals.push("product_followup_answered");
   if (event.degenerateReply || event.unwrappedJson === "unrenderable") signals.push("unexpected_fallback");
   if (event.guardRemoved) signals.push("guard_removed_content");
   if (event.outcome && event.outcome !== "ok") signals.push("api_error");
@@ -96,4 +102,24 @@ export function logEvent(event) {
   const line = JSON.stringify(event);
   if (event.outcome === "ok") console.log(line);
   else console.error(line);
+}
+
+// --- Aggregation / reporting ----------------------------------------------------------------
+// A pure summary over a batch of already-logged events (e.g. pasted from an export of Vercel
+// Runtime Logs, one JSON.parse'd object per line) — no new storage, no database, no network
+// call: the events array is whatever the caller already has. Built for the human-reviewed loop
+// the README describes (telemetry -> identify a recurring pattern -> review -> implement a
+// change -> regression tests -> deploy), never for anything automatic: this only counts and
+// ranks signals that are already there, it changes nothing.
+export function aggregateSignals(events) {
+  const bySignal = new Map();
+  for (const event of events ?? []) {
+    for (const signal of event?.signals ?? []) {
+      bySignal.set(signal, (bySignal.get(signal) ?? 0) + 1);
+    }
+  }
+  const topSignals = [...bySignal.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([signal, count]) => ({ signal, count }));
+  return { totalEvents: events?.length ?? 0, bySignal: Object.fromEntries(bySignal), topSignals };
 }

@@ -372,6 +372,7 @@ async function hydrate(candidate, needs) {
 
   return {
     id: String(live?.id ?? ""),
+    handle: candidate.handle,
     title: clean(live?.title ?? candidate.title, 200),
     vendor: clean(live?.vendor ?? candidate.vendor, 80),
     url: safeProductUrl(candidate.handle),
@@ -381,6 +382,12 @@ async function hydrate(candidate, needs) {
     addToCartUrl: only ? `${STORE_ORIGIN}/cart/add?id=${only.id}&quantity=1&return_to=%2Fcart` : null,
     reason: buildReason(candidate.covered, needs),
     covers: parameterLabels(candidate.covered),
+    // The store's own listing text (already fetched for search/scoring as candidate.body,
+    // already HTML-stripped) — the only authoritative source for usage/range details beyond
+    // what parameters a product covers. Often genuinely has them ("dip the strip, compare to
+    // the chart, results in 45 seconds"); when it doesn't, chat.js tells the model plainly to
+    // say so rather than invent instructions (see productFollowupContext).
+    description: clean(candidate.body, 500),
   };
 }
 
@@ -419,7 +426,15 @@ export async function findProducts(needs) {
     }
     meta.candidates = byHandle.size;
 
-    const chosen = selectProducts([...byHandle.values()], needs);
+    // Optional: when the customer asked for something other than what was already shown
+    // (needs.excludeHandles — see chat.js), those candidates are dropped before scoring/
+    // selection, which are otherwise untouched. Empty/absent by default, so every other caller
+    // sees identical behavior to before.
+    const candidates = needs.excludeHandles?.size
+      ? [...byHandle.values()].filter((c) => !needs.excludeHandles.has(c.handle))
+      : [...byHandle.values()];
+
+    const chosen = selectProducts(candidates, needs);
     meta.qualified = chosen.length;
     const cards = (await Promise.all(chosen.map((c) => hydrate(c, needs)))).filter((p) => p && p.url);
     return { status: cards.length ? "ok" : "no_match", products: cards, meta };

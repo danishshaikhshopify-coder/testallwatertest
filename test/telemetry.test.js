@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import handler from "../api/chat.js";
 import { resetCatalogState } from "../api/_catalog.js";
-import { enrichEvent, classifySignals, logEvent } from "../api/_telemetry.js";
+import { enrichEvent, classifySignals, logEvent, aggregateSignals } from "../api/_telemetry.js";
 import { createFakeStore, installWorld, llmReply } from "./fake-store.js";
 
 beforeEach(() => {
@@ -47,7 +47,7 @@ test("enrichEvent produces the documented shape without renaming any existing fi
   assert.equal(event.startedAt, undefined, "the raw epoch-ms startedAt is dropped once totalMs/timestamp exist");
   assert.deepEqual(Object.keys(event.state).sort(), [
     "goal", "issue", "issueDetails", "lastAnswerWasAmbiguous", "lastAskedField", "pendingWaterTypeSwitch",
-    "relaxedReadiness", "testingScope", "treatment", "uncertainStreak", "waterSource",
+    "recommendationStatus", "relaxedReadiness", "testingScope", "treatment", "uncertainStreak", "waterSource",
     "waterSubtype", "waterType", "waterTypeClarificationCount",
   ].sort());
   assert.ok(Array.isArray(event.signals));
@@ -194,4 +194,161 @@ test("integration: no source file in the telemetry layer contains a hardcoded se
   // scoped here as a direct check on the new file.
   const text = readFileSync(new URL("../api/_telemetry.js", import.meta.url), "utf8");
   assert.doesNotMatch(text, /sk-[A-Za-z0-9_-]{16,}|shpat_|shpca_|shpss_/);
+});
+
+// --- Phase 5: the learning/improvement loop — new signals, and a pure aggregation utility -----
+
+function callThrough(handler) {
+  return function call(messages, state) {
+    const res = { headers: {}, setHeader() {}, status(c) { this.statusCode = c; return this; }, json(p) { this.payload = p; return this; } };
+    return handler({ method: "POST", headers: {}, body: { messages, state } }, res).then(() => res);
+  };
+}
+
+test("Phase 5 (1): recommendation_rejected is recorded for a real conversation that ends in rejection", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  installWorld({ store: createFakeStore(), llm: llmReply("Let's find something else.") });
+  const logs = [];
+  mock.method(console, "log", (line) => logs.push(line));
+  mock.method(console, "error", (line) => logs.push(line));
+  const call = callThrough(handler);
+  let r = await call([{ role: "user", content: "I need an iron test for well water." }]);
+  r = await call(
+    [{ role: "user", content: "I need an iron test for well water." }, { role: "assistant", content: r.payload.reply }, { role: "user", content: "not this one" }],
+    r.payload.state
+  );
+  const entries = logs.map((l) => JSON.parse(l));
+  assert.ok(entries.some((e) => e.signals.includes("recommendation_rejected")));
+});
+
+test("Phase 5 (2): recommendation_accepted is recorded for a real conversation that ends in acceptance", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  installWorld({ store: createFakeStore(), llm: llmReply("Great choice.") });
+  const logs = [];
+  mock.method(console, "log", (line) => logs.push(line));
+  mock.method(console, "error", (line) => logs.push(line));
+  const call = callThrough(handler);
+  let r = await call([{ role: "user", content: "I need an iron test for well water." }]);
+  r = await call(
+    [{ role: "user", content: "I need an iron test for well water." }, { role: "assistant", content: r.payload.reply }, { role: "user", content: "I want this" }],
+    r.payload.state
+  );
+  const entries = logs.map((l) => JSON.parse(l));
+  assert.ok(entries.some((e) => e.signals.includes("recommendation_accepted")));
+});
+
+test("Phase 5 (3): repeated_question is recorded for a real word-for-word repeated message", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  installWorld({ store: createFakeStore(), llm: llmReply("A pool kit would be the usual starting point.") });
+  const logs = [];
+  mock.method(console, "log", (line) => logs.push(line));
+  mock.method(console, "error", (line) => logs.push(line));
+  const call = callThrough(handler);
+  let r = await call([{ role: "user", content: "My pool water is cloudy, what do I need?" }]);
+  r = await call(
+    [{ role: "user", content: "My pool water is cloudy, what do I need?" }, { role: "assistant", content: r.payload.reply }, { role: "user", content: "My pool water is cloudy, what do I need?" }],
+    r.payload.state
+  );
+  const entries = logs.map((l) => JSON.parse(l));
+  assert.ok(entries.some((e) => e.signals.includes("repeated_question")));
+});
+
+test("Phase 5 (4): knowledge_gap fires for a real conversation about an issue the knowledge layer has no entry for", () => {
+  const event = enrichEvent(baseMeta(), baseState({ waterType: "pool", issue: "not_a_real_issue_id" }));
+  assert.ok(event.signals.includes("knowledge_gap"));
+});
+
+test("Phase 5 (5): no_product_match is recorded for a real conversation about a parameter the catalog doesn't carry", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  installWorld({ store: createFakeStore(), llm: llmReply("I couldn't find a matching radon test.") });
+  const logs = [];
+  mock.method(console, "log", (line) => logs.push(line));
+  mock.method(console, "error", (line) => logs.push(line));
+  const call = callThrough(handler);
+  await call([{ role: "user", content: "I need a radon test for my well water." }]);
+  const entries = logs.map((l) => JSON.parse(l));
+  assert.ok(entries.some((e) => e.signals.includes("no_product_match")));
+});
+
+test("Phase 5 (6): frustrated_or_skipped_ahead is recorded for a real 'just tell me what to buy' turn", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  installWorld({ store: createFakeStore(), llm: llmReply("Here is a sensible starting point.") });
+  const logs = [];
+  mock.method(console, "log", (line) => logs.push(line));
+  mock.method(console, "error", (line) => logs.push(line));
+  const call = callThrough(handler);
+  await call([{ role: "user", content: "Just tell me what to buy." }]);
+  const entries = logs.map((l) => JSON.parse(l));
+  assert.ok(entries.some((e) => e.signals.includes("frustrated_or_skipped_ahead")));
+});
+
+test("Phase 5 (7): catalog and API failures each get their own distinct signal from a real conversation", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const logs = [];
+  mock.method(console, "log", (line) => logs.push(line));
+  mock.method(console, "error", (line) => logs.push(line));
+  const call = callThrough(handler);
+
+  // Catalog failure: the store itself is unreachable.
+  installWorld({ store: createFakeStore({ failSearch: true }), llm: llmReply("Trouble reaching the catalog.") });
+  await call([{ role: "user", content: "I need an iron test for well water." }]);
+
+  // API failure: the model call itself fails.
+  resetCatalogState();
+  installWorld({ store: createFakeStore(), llm: async () => new Response(JSON.stringify({ error: { message: "overloaded" } }), { status: 529 }) });
+  await call([{ role: "user", content: "I need an iron test for well water." }]);
+
+  const entries = logs.map((l) => JSON.parse(l));
+  assert.ok(entries.some((e) => e.signals.includes("catalog_unavailable")), "a catalog failure gets catalog_unavailable");
+  assert.ok(entries.some((e) => e.signals.includes("api_error")), "a model/API failure gets api_error, distinct from the catalog signal");
+});
+
+test("Phase 5 (8): telemetry from a real conversation never contains the raw message text or the API key", async () => {
+  delete process.env.SHOPIFY_CATALOG;
+  resetCatalogState();
+  const DISTINCTIVE = "zyxqvorphlemtastic private well situation";
+  installWorld({ store: createFakeStore(), llm: llmReply(`Understood, ${DISTINCTIVE} noted in the reply too.`) });
+  const logs = [];
+  mock.method(console, "log", (line) => logs.push(line));
+  mock.method(console, "error", (line) => logs.push(line));
+  const call = callThrough(handler);
+  await call([{ role: "user", content: `My well water is weird, this is my ${DISTINCTIVE}.` }]);
+  const serialized = logs.join("\n");
+  assert.doesNotMatch(serialized, new RegExp(DISTINCTIVE, "i"), "neither the raw customer text nor the raw assistant reply (which also contained this phrase) ever reaches the log");
+  assert.doesNotMatch(serialized, /test-key/i);
+});
+
+test("Phase 5 (9): telemetry stays stable when newer optional state fields are missing", () => {
+  // Simulates a minimal/older round-tripped state object that predates fields like
+  // recommendationStatus or symptomCandidates — enrichEvent/classifySignals must not throw, and
+  // must not invent a signal from fields that simply aren't there.
+  const minimalState = { conversationId: "conv-minimal" };
+  assert.doesNotThrow(() => enrichEvent(baseMeta(), minimalState));
+  const event = enrichEvent(baseMeta(), minimalState);
+  assert.deepEqual(event.signals, []);
+  assert.equal(event.conversationId, "conv-minimal");
+});
+
+test("Phase 5 (10): aggregateSignals correctly ranks repeated failure patterns across a batch of events", () => {
+  const events = [
+    enrichEvent(baseMeta({ catalog: { status: "no_match", shown: 0 } }), baseState({ waterType: "well" })),
+    enrichEvent(baseMeta({ catalog: { status: "no_match", shown: 0 } }), baseState({ waterType: "well" })),
+    enrichEvent(baseMeta({ catalog: { status: "no_match", shown: 0 } }), baseState({ waterType: "drinking" })),
+    enrichEvent(baseMeta({ relaxedReadiness: true }), baseState({ waterType: "pool", relaxedReadiness: true })),
+    enrichEvent(baseMeta(), baseState({ waterType: "pool", goal: "routine_testing", testingScope: "complete" })),
+  ];
+  const summary = aggregateSignals(events);
+  assert.equal(summary.totalEvents, 5);
+  assert.equal(summary.bySignal.no_product_match, 3, "the repeated failure pattern is counted correctly");
+  assert.equal(summary.bySignal.frustrated_or_skipped_ahead, 1);
+  assert.equal(summary.topSignals[0].signal, "no_product_match", "the most common signal is ranked first");
+  assert.equal(summary.topSignals[0].count, 3);
+  // No crash and a sensible empty result for a batch with nothing to report.
+  assert.deepEqual(aggregateSignals([]), { totalEvents: 0, bySignal: {}, topSignals: [] });
 });

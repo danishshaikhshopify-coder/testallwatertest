@@ -186,9 +186,33 @@ export function hasImmediateProductOrProblemSignal(text) {
 }
 
 // A follow-up question about the products already shown (e.g. "Which one would you recommend?",
-// "Does this test iron?", "Do you have something cheaper?") rather than a new search — answered
-// from state.lastProducts' real, already-on-screen facts (see chat.js), never a new catalog call.
-export const PRODUCT_FOLLOWUP_INTENT = /\bwhich (?:one|option|kit)\b|\bis (?:this|that|it) (?:one )?(?:good|suitable|right|enough)\b|\bdoes (?:this|that|it) (?:one )?(?:test|cover|include)\b|\bcheaper\b|\bmore expensive\b|\bmore (?:things|parameters|tests)\b|\bwhat'?s the difference\b|\bdifference between\b|\bcompare\b|\bwhich (?:would you|do you) recommend\b|\bbetter (?:one|option)\b|\b(?:is|are) (?:it|this|that|they|these) (?:in stock|available)\b/i;
+// "Does this test iron?", "Do you have something cheaper?", "Why this one?", "How do I use it?",
+// "What does this test tell me?") rather than a new search — answered from state.lastProducts'
+// real, already-on-screen facts (see chat.js), never a new catalog call.
+// Includes bare ordinal/demonstrative references ("that one", "the second one") made after
+// multiple products are shown — the customer is pointing at a specific card, not asking a new
+// question, but it still needs the real shown-product facts (and the right one, by position —
+// productFollowupContext already labels them "the first option"/"the second option") rather than
+// a fresh, redundant search.
+export const PRODUCT_FOLLOWUP_INTENT = /\bwhich (?:one|option|kit)\b|\bis (?:this|that|it) (?:one )?(?:good|suitable|right|enough)\b|\bdoes (?:this|that|it) (?:one )?(?:test|cover|include)\b|\bcheaper\b|\bmore expensive\b|\bmore (?:things|parameters|tests)\b|\bwhat'?s the difference\b|\bdifference between\b|\bcompare\b|\bwhich (?:would you|do you) recommend\b|\bbetter (?:one|option)\b|\b(?:is|are) (?:it|this|that|they|these) (?:in stock|available)\b|\bwhy (?:this|that|would you recommend|did you)\b|\bhow do i use\b|\bhow (?:do|would|does) (?:this|that|it) work\b|\bwhat does (?:this|that|it) (?:tell|show|mean|measure|cover)\b|\bwhat does this test (?:measure|tell|show|mean|cover)\b|\bwhat does (?:this|that|it) test for\b|\b(?:that|this) one\b|\bthe (?:first|second|third) (?:one|option)\b|\boption (?:one|two|three|\d)\b/i;
+
+// The customer is rejecting a product already shown (e.g. "no, not this one", "none of these",
+// "that's not what I meant", "guide me") — not merely asking a follow-up about it. Used by
+// chat.js to skip re-searching/re-showing the same declined products and tell the model plainly
+// what happened, instead of silently repeating the recommendation (see REJECTION_NOTE).
+export const PRODUCT_REJECTION = /\bnot this (?:one)?\b|\bnot that (?:one)?\b|\bnone of (?:these|those)\b|\b(?:don'?t|doesn'?t) (?:like|want) (?:this|that|these|those)\b|\bthat'?s not (?:it|right|what i (?:meant|wanted|was looking for))\b|\bwrong (?:one|product|test|kit)\b|\b(?:can you )?(?:please )?(?:just )?guide me\b|\bi'?m (?:still |a bit |a little )?confused\b/i;
+
+// A rejection that specifically asks for a DIFFERENT product, rather than guidance — "show me
+// something else", "something different", "another option", "anything else". Still a rejection
+// (see PRODUCT_REJECTION, recommendationStatus), but handled by chat.js with a real search that
+// excludes the handles already shown (needs.excludeHandles), instead of skipping the search.
+export const WANTS_ALTERNATIVE = /\bsomething else\b|\bsomething different\b|\banother option\b|\bshow me another\b|\ba different (?:one|option|test|kit)\b|\banything else\b|\bwhat else (?:do you have|is there|can i (?:test|check))\b/i;
+
+// The customer is accepting/confirming the shown recommendation (e.g. "I want this", "I'll take
+// it", "sounds good", "that works") — kept narrow and only ever checked once a product has
+// actually been shown, so it never collides with an unrelated bare "yes"/"sure" elsewhere in the
+// guided-question flow.
+export const ACCEPTS_RECOMMENDATION = /\bi'?ll (?:take|get|have|go with) (?:it|this|that)\b|\bi want (?:this|that)(?:\s+one)?\b|\bsounds good\b|\bthat works\b|\bperfect\b|\bthat'?s (?:the one|perfect|great|it)\b|\blet'?s go with (?:this|that)\b/i;
 
 // Whether the latest message is a PURE follow-up about products already shown: the follow-up
 // phrasing above, with no new structured signal (a water type, a parameter, a brand/product
@@ -215,9 +239,21 @@ export function isPureProductFollowup(text) {
 // "I just want to see your water testing products") rather than only the exact phrase, and
 // "what ... kits/tests/products do you sell/have/offer/carry" / "what do you have for/in ..."
 // cover the equally natural "asking, not telling" phrasing of the same browse request.
-const SHOW_PRODUCTS_REQUEST = /\bjust show me\b|\bshow me\b[^.!?\n]{0,40}\b(?:products|options|kits?|tests?|testing|strips?|stuff|supplies|range|what you (?:have|sell|offer))\b|\bskip (?:the )?questions\b|\bskip ahead\b|\bno more questions\b|\bwant(?:s|ed)? to see\b[^.!?\n]{0,40}\b(?:products|options|tests|kits|what you (?:have|sell|offer))\b|\bcan you just (?:show|recommend)\b|\bjust (?:recommend|suggest)(?: me| us)? something\b|\benough questions\b|\bjust tell me what to (?:buy|get)\b|\bjust browsing\b|\bi(?:'m| am) just looking\b|\bwhat\b[^.!?\n]{0,30}\b(?:kits?|tests?|products?|strips?)\b[^.!?\n]{0,20}\bdo you (?:sell|have|offer|carry)\b|\bwhat do you have (?:for|in)\b/i;
+// Exported so chat.js can check whether THIS turn is an explicit "show me products" ask (e.g.
+// to allow a fresh search after a rejection) without relying on state.relaxedReadiness, which is
+// sticky once set and so can't say whether this specific message asked for it.
+export const SHOW_PRODUCTS_REQUEST = /\bjust show me\b|\bshow me\b[^.!?\n]{0,40}\b(?:products|options|kits?|tests?|testing|strips?|stuff|supplies|range|what you (?:have|sell|offer))\b|\bskip (?:the )?questions\b|\bskip ahead\b|\bno more questions\b|\bwant(?:s|ed)? to see\b[^.!?\n]{0,40}\b(?:products|options|tests|kits|what you (?:have|sell|offer))\b|\bcan you just (?:show|recommend)\b|\bjust (?:recommend|suggest)(?: me| us)? something\b|\benough questions\b|\bjust tell me what to (?:buy|get)\b|\bjust browsing\b|\bi(?:'m| am) just looking\b|\bwhat\b[^.!?\n]{0,30}\b(?:kits?|tests?|products?|strips?)\b[^.!?\n]{0,20}\bdo you (?:sell|have|offer|carry)\b|\bwhat do you have (?:for|in)\b/i;
 const FRUSTRATION = /\bstop asking(?: me)?\b|\btoo many questions\b|\bthis is taking (?:too long|forever)\b|\bi(?:'m| am) frustrat\w*\b|\bannoy(?:ed|ing)\b|\bjust answer\b|\bi don'?t want to answer (?:more|any more) questions\b/i;
 const RELAXED_READINESS_TRIGGER = new RegExp(`${SHOW_PRODUCTS_REQUEST.source}|${FRUSTRATION.source}`, "i");
+
+// General guidance-seeking or confusion ("guide me", "I'm confused", "what should I do") with no
+// product or problem signal of its own (see hasImmediateProductOrProblemSignal) — distinct from
+// FRUSTRATION/RELAXED_READINESS_TRIGGER above, which means "skip ahead, just show me products."
+// This customer isn't impatient for a product; they need orientation. Routed by chat.js past the
+// readiness gate into a natural Claude reply, WITHOUT forcing a product search the way relaxed
+// readiness does (see "seeksGuidance" in chat.js) — asking one further question, if genuinely
+// needed, is left to Claude's own reply rather than the gate's structured buttons.
+export const GUIDANCE_SEEKING = /\bguide me\b|\bi'?m (?:still |a bit |a little )?confused\b|\bwhat should i do\b|\bi don'?t know what to do\b|\bcan you (?:just )?help me\b|\bi need (?:some )?guidance\b/i;
 
 // A single "not sure" is normal conversation (handled gracefully per-field below); two in a row
 // signals the customer genuinely can't give more detail, which is its own kind of frustration —
@@ -305,6 +341,9 @@ function resetWaterSpecificState(state, waterType) {
   // genuinely moved on — a "does this test X" follow-up after a real topic change must not be
   // answered from stale, now-irrelevant product data.
   state.lastProducts = [];
+  // Whether a recommendation was accepted/rejected is specific to the recommendation it was
+  // about — a fresh topic has no recommendation yet to have a status on.
+  state.recommendationStatus = null;
 }
 
 function answerToPendingSwitch(text, candidate) {
@@ -352,9 +391,23 @@ export function deriveConversationState(conversation, previousState = null) {
             price: typeof p.price === "string" ? p.price : "",
             available: p.available !== false,
             covers: Array.isArray(p.covers) ? p.covers.filter((c) => typeof c === "string").slice(0, 8) : [],
+            // Lets a later "show me something else" exclude exactly these from a fresh search
+            // (see chat.js/_catalog.js's excludeHandles) — never shown to the customer or model.
+            handle: typeof p.handle === "string" ? p.handle : null,
+            // The store's own listing text, truncated (see productFollowupContext in chat.js) —
+            // the only authoritative source for "how do I use it"/"what does it measure" beyond
+            // the parameters already in `covers`. Often empty; chat.js tells the model to say so
+            // rather than invent instructions when it is.
+            description: typeof p.description === "string" ? p.description.slice(0, 400) : "",
           }))
           .slice(0, 3)
       : [],
+    // Whether the customer accepted, rejected, or hasn't yet reacted to the recommendation in
+    // lastProducts. Cleared to null whenever lastProducts itself is cleared (a fresh topic, or
+    // no recommendation made yet) — see resetWaterSpecificState.
+    recommendationStatus: ["accepted", "rejected", "undecided"].includes(previousState?.recommendationStatus)
+      ? previousState.recommendationStatus
+      : null,
     issues: Array.isArray(previousState?.issues)
       ? unique(previousState.issues.filter((issue) => ISSUE_WORDS.includes(issue)))
       : [],
@@ -993,18 +1046,40 @@ export function isPoolTreatmentQuestion(text) {
   return POOL_TREATMENT_QUESTION.test(text);
 }
 
-export function constrainQuestionToState(reply, readiness) {
+// `trustReply` is computed once by the caller (chat.js) from whatever it already knows about
+// this turn — rejecting, wanting a different option, accepting, or a pure product follow-up
+// ("why this one?", "that one", "is this enough?") — rather than re-derived here from regexes a
+// second time. Any of those is reason enough to trust Claude's own reply rather than
+// re-litigating it against the known-field patterns below: a genuine, context-aware answer to
+// any of them will often mention a known field in passing (the product it just recommended, the
+// parameter it covers) without that being a redundant re-ask — the patterns below have no way to
+// tell the two apart, and discarding a real answer here is worse than occasionally missing a
+// true repeat (which the dedup in guidedResponse/chat.js already catches by comparing actual
+// text).
+export function constrainQuestionToState(reply, readiness, trustReply = false) {
   if (!/\?/.test(reply)) return reply;
+  if (trustReply) return reply;
   const known = readiness.state;
+  // Requires at least two of the three treatment words together, the same co-occurrence
+  // reasoning as asksKnownAquariumType/WaterSource below: the deterministic treatment question
+  // itself lists all three options together ("chlorine-treated, saltwater, or treated with
+  // bromine?"), so seeing at least two together is a genuine "listing the options again" signal
+  // — unlike a bare "chlorine" on its own, which a reply about a bromine pool could easily say
+  // while discussing something else (e.g. comparing sanitisers).
+  const TREATMENT_WORDS = [/\bchlorine\b/i, /\bbromine\b/i, /\bsalt[\s-]?water\b/i];
   const asksKnownTreatment = (known.waterType === "pool" || known.waterType === "spa") &&
     Boolean(known.treatment) &&
-    /\b(?:chlorine|bromine|salt[\s-]?water|treatment|treated|saniti[sz]er)\b/i.test(reply);
+    TREATMENT_WORDS.filter((re) => re.test(reply)).length >= 2;
   const asksKnownWaterType = Boolean(known.waterType) &&
     /what kind of water|which (?:kind|type) of water|are we (?:talking about|testing)|is (?:this|it) (?:a |an )?(?:pool|aquarium|hot tub|tap water)/i.test(reply);
   const asksKnownGoal = Boolean(known.goal) &&
-    /what are you (?:hoping|trying|looking) to (?:check|test|solve)|what do you want to (?:check|test)|what issue are you/i.test(reply);
+    /what are you (?:hoping|trying|looking) to (?:check|test|solve)\b|what do you want to (?:check|test)\b|what issue are you/i.test(reply);
+  // \b after test/check: without it, "routine test" matches as a substring of ordinary prose
+  // like "routine testing matters" — found live via an honest no-match explanation for radon
+  // ("...routine testing matters more than for mains water...") being discarded purely because
+  // of this missing boundary, not because anything was actually being re-asked.
   const asksKnownScope = Boolean(known.testingScope && !["specific-pending", "symptom-pending"].includes(known.testingScope)) &&
-    /recently tested|complete check|full check|routine (?:test|check)|testing scope/i.test(reply);
+    /recently tested\b|complete check\b|full check\b|routine (?:test|check)\b|testing scope\b/i.test(reply);
   // Merely mentioning a known parameter's name is not the same as asking for it again — a
   // reply explaining what pH means legitimately says "pH" several times without being a
   // redundant question. Only flagged when the reply also sounds like it is asking FOR that
@@ -1016,10 +1091,21 @@ export function constrainQuestionToState(reply, readiness) {
     const pattern = PARAM_BY_ID[id]?.user;
     return pattern?.test(reply);
   });
+  // Both of these previously matched on a bare keyword appearing ANYWHERE in the reply
+  // ("freshwater"/"saltwater", or "tap"/"well"/"source"), with no requirement that the reply
+  // was actually ASKING about it — unlike every other asksKnownX check above, which all require
+  // genuine question phrasing. A reply about well water is practically guaranteed to say "well"
+  // somewhere while doing something else entirely (explaining, recommending, apologising) —
+  // found live via a plain "I need a radon test for my well water" discarding Claude's honest,
+  // on-topic no-match explanation purely because it said "well" twice.
+  // Requiring BOTH options to co-occur (rather than one exact phrase) is deliberate: a real
+  // "which one" question naturally names both choices, however it's worded ("is this fresh or
+  // salt water", markdown-bolded, etc.) — a single mention of either one, on its own, is not a
+  // question about which one the water is, just the word appearing while discussing that topic.
   const asksKnownAquariumType = Boolean(known.waterSubtype) &&
-    /freshwater|fresh water|saltwater|salt water/i.test(reply);
+    /fresh\s?water/i.test(reply) && /salt\s?water/i.test(reply);
   const asksKnownWaterSource = Boolean(known.waterSource) &&
-    /tap|well|bottled|spring|source/i.test(reply);
+    /\btap\b/i.test(reply) && /\bwell\b/i.test(reply);
   if (
     !asksKnownTreatment &&
     !asksKnownWaterType &&

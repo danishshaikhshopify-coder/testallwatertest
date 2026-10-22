@@ -8,8 +8,13 @@ import {
   getNextMissingField,
   parameterLabels,
   isPureProductFollowup,
+  PRODUCT_REJECTION,
+  WANTS_ALTERNATIVE,
+  ACCEPTS_RECOMMENDATION,
+  SHOW_PRODUCTS_REQUEST,
   hasImmediateProductOrProblemSignal,
   EDUCATIONAL_QUESTION,
+  GUIDANCE_SEEKING,
   PARAM_BY_ID,
 } from "./_needs.js";
 import { findProducts } from "./_catalog.js";
@@ -188,6 +193,32 @@ const RELAXED_READINESS_NOTE = `IMPORTANT - CUSTOMER ASKED TO SKIP AHEAD: The cu
 - Use only the facts already known (see KNOWN FACTS) to explain and recommend.
 - If some detail is still unknown, make the best reasonable recommendation anyway rather than asking for it.
 - Keep it brief and helpful; do not apologise at length for having asked questions.`;
+
+// The customer declined the product(s) just shown and/or asked for guidance ("no, not this one,
+// can you guide me"). Switch back to being a specialist helping them think it through, not a
+// salesperson repeating the pitch.
+const REJECTION_NOTE = `IMPORTANT - CUSTOMER DECLINED THE RECOMMENDATION: The customer does not want the product(s) you showed, or is asking for guidance instead of a product.
+- Do NOT show, name, or describe those same products again.
+- Do NOT simply repeat your earlier reasoning in different words.
+- Ask what specifically isn't right for them, or offer a genuinely different angle (e.g. a different parameter, a different budget, or more explanation) based on what you already know from KNOWN FACTS.
+- No new product search has been run for this turn — if you don't have enough to suggest something different yet, ask one real question rather than guessing.`;
+
+// The customer rejected the shown product(s) and specifically asked for a different one. A real
+// search has already been run excluding what was shown — PRODUCT CONTEXT below reflects its
+// actual outcome (a genuine alternative, or an honest no-match).
+const ALTERNATIVE_NOTE = `IMPORTANT - CUSTOMER WANTS A DIFFERENT OPTION: The customer does not want the earlier product(s) and asked for something else. A fresh search has already been run that EXCLUDES the product(s) already shown — whatever PRODUCT CONTEXT below describes now IS genuinely different from before, even if it looks similar (e.g. another kit for the same parameter).
+- If PRODUCT CONTEXT below shows a product, present it confidently as the different option they asked for. Never say "there isn't a different option" or "this is the only match" when PRODUCT CONTEXT is showing you one — that would directly contradict what's on screen.
+- Only if PRODUCT CONTEXT itself says no match was found should you say plainly there isn't a different option in the catalog, and offer genuine guidance instead (a different angle, or ask what specifically matters most to them).`;
+
+// The customer confirmed they want the product already shown. Move the conversation forward,
+// not back into selling.
+const ACCEPT_NOTE = `IMPORTANT - CUSTOMER ACCEPTED THE RECOMMENDATION: Acknowledge briefly and help them move forward (e.g. how to use it, what result to expect) — do not re-explain the recommendation or suggest alternatives they did not ask for.`;
+
+// The customer is confused or asking to be guided, not for a product. Think it through with
+// them like a specialist friend would, not a form.
+const GUIDANCE_NOTE = `IMPORTANT - CUSTOMER WANTS GUIDANCE, NOT A PRODUCT: Help them think it through using what you already know (see KNOWN FACTS) — do not recommend a product yet unless you genuinely have enough to do so usefully.
+- Ask at most ONE genuinely useful question if you need more to help, in your own words — do not list everything you could ask about.
+- If you already know enough to give real guidance, just give it; don't manufacture a question for its own sake.`;
 
 // Compare ignoring case, spacing and surrounding punctuation.
 const normalizeForCompare = (text) =>
@@ -544,6 +575,13 @@ function productContext(needs, catalog) {
     }
     const missing = uncoveredExplicit(needs, catalog);
     if (missing) note += ` No product in the TestAllWater catalog covers: ${missing}. Say plainly that no matching product was found for ${missing}; do not suggest the options shown are for it.`;
+    // The "covers" list above only reflects what the product's title/tags explicitly name (by
+    // design, to avoid false matches from loose wording) — its full store listing can say more.
+    // Giving Claude that real text up front means its first answer is already grounded in it,
+    // rather than only becoming available later for a follow-up and forcing a correction.
+    if (primary.description) {
+      note += ` Store listing text for the first option: "${primary.description}" — if you say more about it than the parameter list above, base it on this text and nothing beyond it.`;
+    }
     return note;
   }
   if (catalog.status === "no_match") {
@@ -565,9 +603,14 @@ function productFollowupContext(state) {
     const ordinal = ["first", "second", "third"][i] ?? `option ${i + 1}`;
     const covers = p.covers.length ? p.covers.join(", ") : "no listed parameters on record";
     const stock = p.available ? "in stock" : "currently out of stock";
-    return `- The ${ordinal} option: covers ${covers}; ${p.price || "price shown on its card"}; ${stock}.`;
+    // The store's own listing text — the only authoritative source for "how do I use it" or
+    // "what does it measure" beyond the parameter list above. Often has real usage/range detail
+    // (dip time, how results are read); when the listing doesn't mention something, there is
+    // nothing here to quote, and the instruction below covers that case explicitly.
+    const listing = p.description ? ` Store listing text: "${p.description}"` : " No store listing text is on record for this one.";
+    return `- The ${ordinal} option: covers ${covers}; ${p.price || "price shown on its card"}; ${stock}.${listing}`;
   });
-  return `PRODUCT FOLLOW-UP: The customer is asking about the product(s) already shown earlier in the chat (they are above your reply, so never say "below"), listed here by position (the same "first option"/"second option" ordering already used). Answer ONLY from these real facts — never invent a capability, price, or comparison point not listed here. If the customer asks for something not covered by this information (e.g. an exact spec not listed), say you don't have that detail rather than guessing.\n${lines.join("\n")}`;
+  return `PRODUCT FOLLOW-UP: The customer is asking about the product(s) already shown earlier in the chat (they are above your reply, so never say "below"), listed here by position (the same "first option"/"second option" ordering already used). Answer ONLY from these real facts — never invent a capability, price, comparison point, usage step, measurement range, detection limit, or certification not stated here. If the customer asks about usage, what a result means, or anything else not covered by the store listing text above, say plainly that detail isn't listed and point them to the product page or packaging rather than guessing.\n${lines.join("\n")}`;
 }
 
 const SAYS_NO_MATCH = /\bno (?:matching|suitable|relevant)\b[^.\n]{0,60}\b(?:product|kit|test)s?\b|\bno (?:product|kit|test)s?\b.{0,40}\b(?:found|available|listed)\b|couldn.?t find (?:a |any )?(?:matching |suitable )?(?:product|kit)|(?:don.?t|do not|doesn.?t|does not) (?:currently )?(?:have|list|stock|sell|carry)/i;
@@ -679,7 +722,14 @@ export default async function handler(req, res) {
   const latestText = userMessages.at(-1) ?? "";
   const educational = EDUCATIONAL_QUESTION.test(latestText) && !hasImmediateProductOrProblemSignal(latestText) &&
     !state.pendingWaterTypeSwitch;
-  if (!readiness.ready && !educational && (needs.wantsProducts || state.waterType || state.pendingWaterTypeSwitch ||
+  // General confusion/guidance-seeking ("guide me", "I'm confused", "what should I do?") with no
+  // product or problem signal of its own — same carve-out shape as `educational` above, but for
+  // "help me think" rather than "explain this": routed to a natural Claude reply instead of the
+  // gate's structured next question, and (unlike relaxedReadiness) without forcing a product
+  // search — a confused customer needs orientation, not a premature recommendation.
+  const seeksGuidance = GUIDANCE_SEEKING.test(latestText) && !hasImmediateProductOrProblemSignal(latestText) &&
+    !state.pendingWaterTypeSwitch;
+  if (!readiness.ready && !educational && !seeksGuidance && (needs.wantsProducts || state.waterType || state.pendingWaterTypeSwitch ||
     state.relaxedReadiness || hasImmediateProductOrProblemSignal(latestText))) {
     const guided = guidedResponse(state, readiness, userMessages.at(-1) ?? "");
     state.lastAskedField = guided.field;
@@ -719,8 +769,32 @@ export default async function handler(req, res) {
   const latestMessage = userMessages.at(-1) ?? "";
   const productFollowup = state.lastProducts.length > 0 && isPureProductFollowup(latestMessage);
 
-  // Product matching is allowed only after the deterministic readiness gate is satisfied.
-  const catalog = repeated || !needs.wantsProducts || !readiness.ready || productFollowup || educational
+  // The customer is declining the product(s) already shown. A plain rejection ("no, not this
+  // one, guide me") gets guidance instead of a re-search; "show me something else" gets a real
+  // search that excludes the handles already shown (see excludeHandles below), so it can never
+  // silently repeat them; accepting ("I'll take it", "sounds good") needs no further search.
+  const rejectsRecommendation = state.lastProducts.length > 0 && PRODUCT_REJECTION.test(latestMessage);
+  const wantsAlternative = state.lastProducts.length > 0 && WANTS_ALTERNATIVE.test(latestMessage);
+  const acceptsRecommendation = state.lastProducts.length > 0 && ACCEPTS_RECOMMENDATION.test(latestMessage);
+
+  // Once rejected, a later turn that names nothing new must not let an old, sticky state.goal
+  // (or similarly stale product intent) silently re-trigger the same search — only an explicit
+  // new ask (another "show me"/"something else") does. Everything else gets guidance instead.
+  const staleAfterRejection = state.recommendationStatus === "rejected" && !wantsAlternative &&
+    !acceptsRecommendation && !SHOW_PRODUCTS_REQUEST.test(latestMessage);
+
+  if (wantsAlternative) {
+    needs.excludeHandles = new Set(state.lastProducts.map((p) => p.handle).filter(Boolean));
+  }
+
+  // "Show me something else" always wins over any other skip reason that might also match the
+  // SAME message (e.g. "not this one, show me something else" matches both rejection and
+  // wants-alternative) — otherwise the explicit ask for an alternative would be silently
+  // dropped in favor of plain guidance, and no search (with the exclusion above) would ever
+  // run. Product matching is otherwise allowed only after the deterministic readiness gate is
+  // satisfied.
+  const catalog = repeated || !needs.wantsProducts || !readiness.ready || educational || seeksGuidance ||
+    (!wantsAlternative && (productFollowup || rejectsRecommendation || acceptsRecommendation || staleAfterRejection))
     ? { status: "skipped", products: [], meta: {} }
     : await findProducts(needs);
 
@@ -737,10 +811,20 @@ export default async function handler(req, res) {
       price: p.price?.display ?? "",
       available: p.available !== false,
       covers: p.covers ?? [],
+      handle: p.handle ?? null,
+      description: p.description ?? "",
     }));
   } else if (catalog.status === "no_match") {
     state.lastProducts = []; // the topic moved on; older cards must not answer a follow-up
   }
+
+  // recommendationStatus reflects what the customer has said about the CURRENT lastProducts: a
+  // fresh "ok" search always means a new, undecided recommendation, which overrides whatever an
+  // accept/reject on the OLD products just set (e.g. "show me something else" that found a real
+  // alternative is a new pending decision, not still "rejected").
+  if (acceptsRecommendation) state.recommendationStatus = "accepted";
+  else if (rejectsRecommendation || wantsAlternative) state.recommendationStatus = "rejected";
+  if (catalog.status === "ok") state.recommendationStatus = "undecided";
 
   // The notes go into the single system prompt (the Anthropic API takes it as a separate
   // top-level field, not as a message in the conversation).
@@ -750,6 +834,14 @@ export default async function handler(req, res) {
     readiness.ready ? "RECOMMENDATION STATUS: READY. The required context has been gathered. Do not ask for information already provided; give a recommendation based on the gathered details." : "",
     repeated ? REPEATED_MESSAGE_NOTE : "",
     state.relaxedReadiness ? RELAXED_READINESS_NOTE : "",
+    // Gated on !wantsAlternative: "not this one, show me something else" matches both rejection
+    // and wants-alternative, and a real search now runs for it (see the catalog condition
+    // above) — REJECTION_NOTE's "no new search has been run" would be flatly false in that case,
+    // directly contradicting ALTERNATIVE_NOTE below. wants-alternative always wins.
+    (rejectsRecommendation && !wantsAlternative) || staleAfterRejection ? REJECTION_NOTE : "",
+    wantsAlternative ? ALTERNATIVE_NOTE : "",
+    acceptsRecommendation && !wantsAlternative ? ACCEPT_NOTE : "",
+    seeksGuidance ? GUIDANCE_NOTE : "",
     knowledgeContext(state, needs),
     productContext(needs, catalog),
     productFollowup ? productFollowupContext(state) : "",
@@ -766,6 +858,11 @@ export default async function handler(req, res) {
   };
   if (repeated) meta.repeatedMessage = true;
   if (state.relaxedReadiness) meta.relaxedReadiness = true;
+  if (rejectsRecommendation) meta.rejectsRecommendation = true;
+  // A genuinely useful follow-up answered from the real shown-product facts, with no redundant
+  // search — distinct from state.recommendationStatus (which only tracks accept/reject), this is
+  // what lets a human reviewer see how often customers engage with a recommendation this way.
+  if (productFollowup) meta.productFollowup = true;
   if (conversation.length !== history.length) meta.droppedUnansweredRepeats = history.length - conversation.length;
   if (catalog.status !== "skipped") {
     meta.catalog = { status: catalog.status, shown: catalog.products.length, ...catalog.meta };
@@ -774,7 +871,9 @@ export default async function handler(req, res) {
 
   try {
     const result = await callModel({ apiKey, system, messages, meta });
-    const constrainedReply = constrainQuestionToState(result.reply, readiness);
+    const trustReply = rejectsRecommendation || wantsAlternative || acceptsRecommendation ||
+      productFollowup || seeksGuidance || staleAfterRejection;
+    const constrainedReply = constrainQuestionToState(result.reply, readiness, trustReply);
     if (constrainedReply !== result.reply) meta.rejectedKnownFieldQuestion = true;
     let reply = finalizeReply(constrainedReply, needs, catalog, meta);
     let options = [];

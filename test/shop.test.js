@@ -439,7 +439,7 @@ test("chat: a pool question returns the model's answer plus real product cards",
   assert.ok(res.payload.products.length >= 1 && res.payload.products.length <= 3);
   for (const p of res.payload.products) {
     assert.ok(productByHandle[p.url.split("/products/")[1]], `${p.title} must exist in the store`);
-    assert.deepEqual(Object.keys(p).sort(), ["addToCartUrl", "available", "covers", "id", "image", "price", "reason", "title", "url", "vendor"]);
+    assert.deepEqual(Object.keys(p).sort(), ["addToCartUrl", "available", "covers", "description", "handle", "id", "image", "price", "reason", "title", "url", "vendor"]);
   }
   assert.equal(world.llmCalls.length, 1);
 });

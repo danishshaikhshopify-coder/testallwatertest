@@ -505,7 +505,15 @@ export function deriveConversationState(conversation, previousState = null) {
       state.waterTypeClarificationCount = 0;
       state.lastAnswerWasAmbiguous = false;
     } else if (candidate && state.waterType === candidate && isExplicitSwitch(text, candidate)) {
-      resetWaterSpecificState(state, candidate);
+      // detectContext returns the FIRST matching context in CONTEXTS' fixed order — when
+      // switching away from the current type, the customer often names it too, just to dismiss
+      // it ("never mind the pool, I need my aquarium tested instead"), and that mention alone
+      // can outrank the actual new type simply because it comes earlier in that list. Switch
+      // intent plus a second, genuinely different context word is the real signal of which type
+      // is meant, not which one happened to match first — found live via exactly that phrasing
+      // running a fresh POOL product search when the customer had already switched to aquarium.
+      const other = CONTEXTS.find((c) => c.id !== state.waterType && c.user.test(text))?.id;
+      resetWaterSpecificState(state, other ?? candidate);
     }
 
     if (state.pendingWaterTypeSwitch) continue;

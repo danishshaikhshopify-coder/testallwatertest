@@ -576,6 +576,26 @@ test("conversation memory (5): pool to aquarium topic change drops the stale poo
   assert.equal(response.payload.state.issueDetails.length, 0);
 });
 
+test("Phase 6 (topic switch): naming the OLD water type only to dismiss it still switches to the new one, not a no-op", async () => {
+  const store = createFakeStore();
+  const world = installWorld({ store, llm: llmReply("Switching to aquarium guidance.") });
+  const conversation = [];
+  let response = await sendTurn(conversation, "My pool is cloudy, I'm using chlorine.");
+  assert.equal(response.payload.state.waterType, "pool");
+  // Naming "pool" here is just to dismiss it, not to stay on it — detectContext's fixed
+  // priority order previously always preferred whichever context matched first, which was
+  // "pool" (checked before "aquarium"), silently treating this as a same-type no-op reset and
+  // then running a fresh POOL product search instead of actually switching.
+  response = await sendTurn(conversation, "Actually never mind the pool, I need to test my aquarium instead. It's a freshwater tank.", response.payload.state);
+  assert.equal(response.payload.state.waterType, "aquarium", "must switch to the newly named type, not stay on the dismissed one");
+  assert.equal(response.payload.state.waterSubtype, "freshwater");
+  assert.equal(response.payload.state.issue, null, "the pool-specific issue must not survive the switch");
+  assert.equal(response.payload.state.treatment, null, "the pool-specific treatment must not survive the switch");
+  for (const p of response.payload.products ?? []) {
+    assert.ok(p.covers.some((c) => /ammonia|nitrite|nitrate|ph/i.test(c)), `${p.title} must be a real aquarium product, not a leftover pool one`);
+  }
+});
+
 test("conversation memory (6): well to drinking-water topic change drops the stale well-specific parameter", async () => {
   const store = createFakeStore();
   installWorld({ store, llm: llmReply("Let's talk about your tap water instead.") });
